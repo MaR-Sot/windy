@@ -4,25 +4,26 @@ const win32 = @import("win32").everything;
 
 const zd = @import("zd.zig");
 
-fn appendFilters(allocator: std.mem.Allocator, dialog: *win32.IFileDialog, filters: []const dialog.Filter) !void {
+fn appendFilters(allocator: std.mem.Allocator, dialog: *win32.IFileDialog, filters: []const zd.Filter) !void {
     const com_filters = try allocator.alloc(win32.COMDLG_FILTERSPEC, filters.len);
     for (filters, com_filters) |f, *cf| {
         var ext_list: std.ArrayList(u8) = .empty;
         if (f.exts) |exts| for (exts, 0..) |ext, i| {
             try ext_list.print(allocator, "*.{s}{s}", .{ ext, if (i == exts.len - 1) "" else ";" });
-        } else try ext_list.append(allocator, "*.*");
+        } else try ext_list.appendSlice(allocator, "*.*");
         cf.* = .{
-            .pszName = try std.unicode.wtf8ToWtf16LeAlloc(allocator, f.name),
-            .pszSpec = try std.unicode.wtf8ToWtf16LeAlloc(allocator, ext_list.items),
+            .pszName = try std.unicode.wtf8ToWtf16LeAllocZ(allocator, f.name),
+            .pszSpec = try std.unicode.wtf8ToWtf16LeAllocZ(allocator, ext_list.items),
         };
     }
-    dialog.SetFileTypes(@intCast(com_filters.len), com_filters.ptr);
+    if (win32.FAILED(dialog.SetFileTypes(@intCast(com_filters.len), com_filters.ptr)))
+        return error.FilterSetFailed;
 }
 
 fn setDefaultPath(allocator: std.mem.Allocator, dialog: *win32.IFileDialog, path: []const u8) !void {
-    const w_path = try std.unicode.wtf8ToWtf16LeAlloc(allocator, path);
+    const w_path = try std.unicode.wtf8ToWtf16LeAllocZ(allocator, path);
     var folder: *win32.IShellItem = undefined;
-    const path_res = win32.SHCreateItemFromParsingName(w_path, null, win32.IID_IShellItem, &folder);
+    const path_res = win32.SHCreateItemFromParsingName(w_path, null, win32.IID_IShellItem, @ptrCast(&folder));
     if (path_res == HRESULT_FROM_WIN32(.ERROR_FILE_NOT_FOUND) or path_res == HRESULT_FROM_WIN32(.ERROR_INVALID_DRIVE))
         return;
     if (win32.FAILED(path_res)) return error.DefaultPathParseFailed;
@@ -47,7 +48,7 @@ pub fn openDialog(
 
     var dialog: *win32.IFileOpenDialog = undefined;
     if (win32.FAILED(win32.CoCreateInstance(
-        .initString(win32.CLSID_FileOpenDialog),
+        win32.CLSID_FileOpenDialog,
         null,
         win32.CLSCTX_ALL,
         win32.IID_IFileOpenDialog,
@@ -57,7 +58,7 @@ pub fn openDialog(
 
     if (multiple_selection or dialog_type == .directory) {
         var flags: win32.FILEOPENDIALOGOPTIONS = undefined;
-        if (win32.FAILED(dialog.IFileDialog.GetOptions(&flags)))
+        if (win32.FAILED(dialog.IFileDialog.GetOptions(@ptrCast(&flags))))
             return error.GetFlagsFailed;
         if (multiple_selection) flags.ALLOWMULTISELECT = 1;
         if (dialog_type == .directory) flags.PICKFOLDERS = 1;
@@ -67,7 +68,7 @@ pub fn openDialog(
 
     try appendFilters(allocator, &dialog.IFileDialog, filters);
     if (default_path) |path| try setDefaultPath(allocator, &dialog.IFileDialog, path);
-    if (win32.FAILED(dialog.IFileDialog.SetTitle(try std.unicode.wtf8ToWtf16LeAlloc(allocator, title))))
+    if (win32.FAILED(dialog.IFileDialog.SetTitle(try std.unicode.wtf8ToWtf16LeAllocZ(allocator, title))))
         return error.SetTitleFailed;
 
     const show_res = dialog.IModalWindow.Show(null);
@@ -77,12 +78,12 @@ pub fn openDialog(
 
     if (!multiple_selection) {
         var item: *win32.IShellItem = undefined;
-        if (win32.FAILED(dialog.IFileDialog.GetResult(&item)))
+        if (win32.FAILED(dialog.IFileDialog.GetResult(@ptrCast(&item))))
             return error.GetDialogResultFailed;
         defer _ = item.IUnknown.Release();
 
         var file_path: [*:0]u16 = undefined;
-        if (win32.FAILED(item.GetDisplayName(win32.SIGDN_FILESYSPATH, &file_path)))
+        if (win32.FAILED(item.GetDisplayName(win32.SIGDN_FILESYSPATH, @ptrCast(&file_path))))
             return error.GetDialogNameFailed;
         defer win32.CoTaskMemFree(file_path);
 
@@ -90,28 +91,28 @@ pub fn openDialog(
     }
 
     var items: *win32.IShellItemArray = undefined;
-    if (win32.FAILED(dialog.GetResults(&items)))
+    if (win32.FAILED(dialog.GetResults(@ptrCast(&items))))
         return error.GetDialogResultFailed;
     defer _ = items.IUnknown.Release();
 
     var items_len: u32 = 0;
-    if (win32.FAILED(items.GetCount(&items_len)))
+    if (win32.FAILED(items.GetCount(@ptrCast(&items_len))))
         return error.GetPathLenFailed;
     if (items_len == 0) return &.{};
 
     var ret: std.ArrayList([]const u8) = .empty;
     for (0..items_len) |i| {
         var item: *win32.IShellItem = undefined;
-        if (win32.FAILED(items.GetItemAt(@intCast(i), &item)))
+        if (win32.FAILED(items.GetItemAt(@intCast(i), @ptrCast(&item))))
             return error.PathEnumerationFailed;
 
         const sfgao_fs = win32.SFGAO_FILESYSTEM;
         var attribs: u32 = undefined;
-        if (win32.FAILED(item.GetAttributes(@intCast(sfgao_fs), &attribs)) or (attribs & sfgao_fs) == 0)
+        if (win32.FAILED(item.GetAttributes(@intCast(sfgao_fs), @ptrCast(&attribs))) or (attribs & sfgao_fs) == 0)
             return error.PathAttribGetFailed;
 
         var path: [*:0]u16 = undefined;
-        if (win32.FAILED(item.GetDisplayName(win32.SIGDN_FILESYSPATH, &path)))
+        if (win32.FAILED(item.GetDisplayName(win32.SIGDN_FILESYSPATH, @ptrCast(&path))))
             return error.PathNameGetFailed;
         defer win32.CoTaskMemFree(path);
 
@@ -135,7 +136,7 @@ pub fn saveDialog(
 
     var dialog: *win32.IFileSaveDialog = undefined;
     if (win32.FAILED(win32.CoCreateInstance(
-        .initString(win32.CLSID_FileSaveDialog),
+        win32.CLSID_FileSaveDialog,
         null,
         win32.CLSCTX_ALL,
         win32.IID_IFileSaveDialog,
@@ -145,7 +146,7 @@ pub fn saveDialog(
 
     try appendFilters(allocator, &dialog.IFileDialog, filters);
     if (default_path) |path| try setDefaultPath(allocator, &dialog.IFileDialog, path);
-    if (win32.FAILED(dialog.IFileDialog.SetTitle(try std.unicode.wtf8ToWtf16LeAlloc(allocator, title))))
+    if (win32.FAILED(dialog.IFileDialog.SetTitle(try std.unicode.wtf8ToWtf16LeAllocZ(allocator, title))))
         return error.SetTitleFailed;
 
     const show_res = dialog.IModalWindow.Show(null);
@@ -154,22 +155,22 @@ pub fn saveDialog(
         return error.ShowDialogFailed;
 
     var item: *win32.IShellItem = undefined;
-    if (win32.FAILED(dialog.IFileDialog.GetResult(&item)))
+    if (win32.FAILED(dialog.IFileDialog.GetResult(@ptrCast(&item))))
         return error.GetDialogResultFailed;
     defer _ = item.IUnknown.Release();
 
     var file_path: [*:0]u16 = undefined;
-    if (win32.FAILED(item.GetDisplayName(win32.SIGDN_FILESYSPATH, &file_path)))
+    if (win32.FAILED(item.GetDisplayName(win32.SIGDN_FILESYSPATH, @ptrCast(&file_path))))
         return error.GetDialogNameFailed;
     defer win32.CoTaskMemFree(file_path);
 
     return try std.unicode.wtf16LeToWtf8Alloc(child_allocator, std.mem.span(file_path));
 }
 
-const UnsignedHRESULT = std.meta.Int(.unsigned, @typeInfo(win32.HRESULT).Int.bits);
+const UnsignedHRESULT = std.meta.Int(.unsigned, @typeInfo(win32.HRESULT).int.bits);
 pub fn HRESULT_FROM_WIN32(err: win32.WIN32_ERROR) win32.HRESULT {
     const hr: UnsignedHRESULT = (@as(UnsignedHRESULT, @intFromEnum(err)) & 0x0000FFFF) |
-        (@as(UnsignedHRESULT, win32.FACILITY_WIN32) << 16) |
+        (@as(UnsignedHRESULT, @intFromEnum(win32.FACILITY_WIN32)) << 16) |
         @as(UnsignedHRESULT, 0x80000000);
     return @bitCast(hr);
 }
