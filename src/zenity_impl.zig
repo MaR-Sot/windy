@@ -2,7 +2,7 @@ const std = @import("std");
 
 const zd = @import("zd.zig");
 
-fn runCommand(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) ![]const u8 {
+fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
     var process: std.process.Child = .init(argv, allocator);
     errdefer _ = process.wait() catch {};
     process.stdout_behavior = .Pipe;
@@ -10,7 +10,7 @@ fn runCommand(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8
 
     const stdout = process.stdout.?;
     var stdout_buf: [4096]u8 = undefined;
-    var stdout_reader = stdout.reader(io, &stdout_buf);
+    var stdout_reader = stdout.reader(&stdout_buf);
     const ret = try stdout_reader.interface.allocRemaining(allocator, .unlimited);
 
     const term = try process.wait();
@@ -25,7 +25,6 @@ pub fn openDialog(
     comptime multiple_selection: bool,
     allocator: std.mem.Allocator,
     child_allocator: std.mem.Allocator,
-    io: std.Io,
     dialog_type: zd.DialogType,
     filters: []const zd.Filter,
     title: []const u8,
@@ -41,7 +40,7 @@ pub fn openDialog(
     if (default_path) |name|
         try args.append(allocator, try std.fmt.allocPrint(allocator, "--filename={s}", .{name}));
 
-    const output = std.mem.trimEnd(u8, try runCommand(allocator, io, args.items), "\n");
+    const output = std.mem.trimEnd(u8, try runCommand(allocator, args.items), "\n");
     if (!multiple_selection) return try child_allocator.dupe(u8, output);
 
     var result: std.ArrayList([]const u8) = .{};
@@ -54,7 +53,6 @@ pub fn openDialog(
 pub fn saveDialog(
     allocator: std.mem.Allocator,
     child_allocator: std.mem.Allocator,
-    io: std.Io,
     filters: []const zd.Filter,
     title: []const u8,
     default_path: ?[]const u8,
@@ -67,7 +65,7 @@ pub fn saveDialog(
     if (default_path) |name|
         try args.append(allocator, try std.fmt.allocPrint(allocator, "--filename={s}", .{name}));
 
-    return try child_allocator.dupe(u8, std.mem.trimEnd(u8, try runCommand(allocator, io, args.items), "\n"));
+    return try child_allocator.dupe(u8, std.mem.trimEnd(u8, try runCommand(allocator, args.items), "\n"));
 }
 
 fn appendFilterArgs(

@@ -7,7 +7,7 @@
         "build.zig.zon",
         "example.zig",
     },
-    .minimum_zig_version = "0.16.0-dev.1484+d0ba6642b",
+    .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .zig_dialog = .{ .path = ".." },
     },

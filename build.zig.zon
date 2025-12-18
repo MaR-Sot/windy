@@ -2,7 +2,7 @@
     .name = .zig_dialog,
     .version = "0.1.0",
     .fingerprint = 0x93103e55d72a95d,
-    .minimum_zig_version = "0.16.0-dev.1484+d0ba6642b",
+    .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .zigwin32 = .{
             .url = "git+https://github.com/marlersoft/zigwin32.git#5587b16fa040573846a6bf531301f6206d31a6bf",

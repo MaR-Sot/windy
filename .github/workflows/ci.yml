@@ -1,0 +1,38 @@
+name: ci
+on:
+  push:
+    paths-ignore:
+      - "README.md"
+      - "LICENSE"
+  pull_request:
+    paths-ignore:
+      - "README.md"
+      - "LICENSE"
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}-${{ github.actor }}
+  cancel-in-progress: true
+jobs:
+  build-ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Install packages
+        run: |
+          sudo apt update
+          sudo apt install libgtk-3-dev
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+      - name: Build
+        working-directory: ./example
+        run: zig build
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+      - name: Build
+        working-directory: ./example
+        run: zig build

@@ -5,7 +5,7 @@ const win32 = @import("win32").everything;
 const zd = @import("zd.zig");
 
 fn appendFilters(allocator: std.mem.Allocator, dialog: *win32.IFileDialog, filters: []const dialog.Filter) !void {
-    var com_filters = try allocator.alloc(win32.COMDLG_FILTERSPEC, filters.len);
+    const com_filters = try allocator.alloc(win32.COMDLG_FILTERSPEC, filters.len);
     for (filters, com_filters) |f, *cf| {
         var ext_list: std.ArrayList(u8) = .empty;
         if (f.exts) |exts| for (exts, 0..) |ext, i| {
@@ -40,7 +40,7 @@ pub fn openDialog(
     title: []const u8,
     default_path: ?[]const u8,
 ) !if (multiple_selection) []const []const u8 else []const u8 {
-    const init_res = win32.CoInitializeEx(null, .{ .APARTMENTTHREADED = true, .DISABLE_OLE1DDE = true });
+    const init_res = win32.CoInitializeEx(null, .{ .APARTMENTTHREADED = 1, .DISABLE_OLE1DDE = 1 });
     if (init_res != win32.RPC_E_CHANGED_MODE and win32.FAILED(init_res))
         return error.ComInitFailed;
     defer if (win32.SUCCEEDED(init_res)) win32.CoUninitialize();
@@ -59,8 +59,8 @@ pub fn openDialog(
         var flags: win32.FILEOPENDIALOGOPTIONS = undefined;
         if (win32.FAILED(dialog.IFileDialog.GetOptions(&flags)))
             return error.GetFlagsFailed;
-        if (multiple_selection) flags.ALLOWMULTISELECT = true;
-        if (dialog_type == .directory) flags.PICKFOLDERS = true;
+        if (multiple_selection) flags.ALLOWMULTISELECT = 1;
+        if (dialog_type == .directory) flags.PICKFOLDERS = 1;
         if (win32.FAILED(dialog.IFileDialog.SetOptions(flags)))
             return error.SetFlagsFailed;
     }
@@ -128,7 +128,7 @@ pub fn saveDialog(
     title: []const u8,
     default_path: ?[]const u8,
 ) ![]const u8 {
-    const init_res = win32.CoInitializeEx(null, .{ .APARTMENTTHREADED = true, .DISABLE_OLE1DDE = true });
+    const init_res = win32.CoInitializeEx(null, .{ .APARTMENTTHREADED = 1, .DISABLE_OLE1DDE = 1 });
     if (init_res != win32.RPC_E_CHANGED_MODE and win32.FAILED(init_res))
         return error.ComInitFailed;
     defer if (win32.SUCCEEDED(init_res)) win32.CoUninitialize();

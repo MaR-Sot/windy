@@ -7,25 +7,21 @@ pub fn main() !void {
     defer _ = dbg_alloc.deinit();
     const allocator = dbg_alloc.allocator();
 
-    var threaded: std.Io.Threaded = .init(allocator);
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    const save_path = try zd.saveDialog(allocator, io, &.{
+    const save_path = try zd.saveDialog(allocator, &.{
         .{ .name = "Zig", .exts = &.{ "zig", "zon" } },
         .{ .name = "Text", .exts = &.{ "txt", "pdf" } },
     }, "Hello World", null);
     defer zd.freeResult(allocator, save_path);
     std.log.err("Save dialog path: {s}", .{save_path});
 
-    const open_path = try zd.openDialog(false, allocator, io, .file, &.{
+    const open_path = try zd.openDialog(false, allocator, .file, &.{
         .{ .name = "Zig", .exts = &.{ "zig", "zon" } },
         .{ .name = "Text", .exts = &.{ "txt", "pdf" } },
     }, "Hello World", null);
     defer zd.freeResult(allocator, open_path);
     std.log.err("Open dialog path: {s}", .{open_path});
 
-    const multi_path = try zd.openDialog(true, allocator, io, .file, &.{
+    const multi_path = try zd.openDialog(true, allocator, .file, &.{
         .{ .name = "Zig", .exts = &.{ "zig", "zon" } },
         .{ .name = "Text", .exts = &.{ "txt", "pdf" } },
     }, "Hello World", null);

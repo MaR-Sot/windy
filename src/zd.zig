@@ -108,7 +108,6 @@ pub fn freeResult(allocator: std.mem.Allocator, result: anytype) void {
 pub fn openDialog(
     comptime multiple_selection: bool,
     allocator: std.mem.Allocator,
-    io: std.Io,
     dialog_type: DialogType,
     filters: []const Filter,
     /// The title will be set to `Select Folder` or `Select File`
@@ -132,7 +131,7 @@ pub fn openDialog(
         return if (options.use_gtk)
             try gtk.openDialog(multiple_selection, allocator, dialog_type, mod.filters, mod.title, mod.default_path)
         else
-            try zenity.openDialog(multiple_selection, arena_allocator, allocator, io, dialog_type, mod.filters, mod.title, mod.default_path);
+            try zenity.openDialog(multiple_selection, arena_allocator, allocator, dialog_type, mod.filters, mod.title, mod.default_path);
     }
 
     return switch (builtin.os.tag) {
@@ -146,7 +145,6 @@ pub fn openDialog(
 /// Note: Windows assumes input strings to be WTF8 and returns WTF8.
 pub fn saveDialog(
     allocator: std.mem.Allocator,
-    io: std.Io,
     filters: []const Filter,
     /// The title will be set to `Save File` if set to null
     title: ?[]const u8,
@@ -165,7 +163,7 @@ pub fn saveDialog(
         return if (options.use_gtk)
             try gtk.saveDialog(allocator, mod.filters, mod.title, mod.default_path)
         else
-            try zenity.saveDialog(arena_allocator, allocator, io, mod.filters, mod.title, mod.default_path);
+            try zenity.saveDialog(arena_allocator, allocator, mod.filters, mod.title, mod.default_path);
     }
 
     return switch (builtin.os.tag) {
