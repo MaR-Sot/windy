@@ -8,8 +8,9 @@ fn appendFilters(allocator: std.mem.Allocator, dialog: *win32.IFileDialog, filte
     const com_filters = try allocator.alloc(win32.COMDLG_FILTERSPEC, filters.len);
     for (filters, com_filters) |f, *cf| {
         var ext_list: std.ArrayList(u8) = .empty;
-        if (f.exts) |exts| for (exts, 0..) |ext, i| {
-            try ext_list.print(allocator, "*.{s}{s}", .{ ext, if (i == exts.len - 1) "" else ";" });
+        if (f.exts) |exts| {
+            for (exts, 0..) |ext, i|
+                try ext_list.print(allocator, "*.{s}{s}", .{ ext, if (i == exts.len - 1) "" else ";" });
         } else try ext_list.appendSlice(allocator, "*.*");
         cf.* = .{
             .pszName = try std.unicode.wtf8ToWtf16LeAllocZ(allocator, f.name),
@@ -116,10 +117,10 @@ pub fn openDialog(
             return error.PathNameGetFailed;
         defer win32.CoTaskMemFree(path);
 
-        try ret.append(allocator, try std.unicode.wtf16LeToWtf8Alloc(allocator, std.mem.span(path)));
+        try ret.append(child_allocator, try std.unicode.wtf16LeToWtf8Alloc(child_allocator, std.mem.span(path)));
     }
 
-    return try ret.toOwnedSlice(allocator);
+    return try ret.toOwnedSlice(child_allocator);
 }
 
 pub fn saveDialog(
