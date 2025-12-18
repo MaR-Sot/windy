@@ -1,5 +1,6 @@
 ## zig-dialog
 Cross-platform dialog library in Zig (work in progress)
+
 An example implementation can be found over at `./example`.
 
 Supported dialog types:
