@@ -10,6 +10,28 @@ const zenity = @import("zenity_impl.zig");
 pub const MessageLevel = enum { info, warn, err };
 pub const MessageButtons = enum { yes_no, ok_cancel, ok };
 pub const DialogType = enum { file, directory };
+pub const Rgba = packed struct(u32) {
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+
+    pub fn fromColor(rgb: u32, alpha: f32) Rgba {
+        return .{
+            .r = @intCast((rgb >> 16) & 255),
+            .g = @intCast((rgb >> 8) & 255),
+            .b = @intCast(rgb & 255),
+            .a = @intFromFloat(255.0 * alpha),
+        };
+    }
+
+    pub fn toColor(self: Rgba) u32 {
+        return @as(u32, @intCast(self.r)) << 16 |
+            @as(u32, @intCast(self.g)) << 8 |
+            @as(u32, @intCast(self.b));
+    }
+};
+
 pub const Filter = struct {
     name: []const u8,
     /// Null implies all extensions
@@ -90,7 +112,7 @@ fn modParams(
     };
 }
 
-/// Frees the results of `openDialog()`, `multiOpenDialog()` and `saveDialog()`.
+/// Frees the results of `openDialog()` and `saveDialog()`.
 /// This is just a convenience function that does not do anything special,
 /// it just frees the root slice and its child slices, if any.
 pub fn freeResult(allocator: std.mem.Allocator, result: anytype) void {
@@ -104,7 +126,7 @@ pub fn freeResult(allocator: std.mem.Allocator, result: anytype) void {
     }
 }
 
-/// Opens an open dialog of the given type, returns the resulting path
+/// Opens an open dialog of the given type, returns the resulting path(s)
 /// once the user is finished interacting with it.
 /// Note: Windows assumes input strings to be WTF8 and returns WTF8.
 pub fn openDialog(
@@ -216,6 +238,41 @@ pub fn message(
 
     return switch (builtin.os.tag) {
         .windows => try win.message(arena_allocator, level, buttons, mod_text, mod_title),
+        else => @compileError("Unsupported OS"),
+    };
+}
+
+/// Opens a color chooser dialog, setting the initial value to `color`.
+/// Returns the selected color in RGBA, or `error.Canceled` if the dialog is canceled.
+/// Note: Windows assumes input strings to be WTF8 and ignores `use_alpha` and `title`, as they're unsupported.
+pub fn colorChooser(
+    allocator: std.mem.Allocator,
+    color: Rgba,
+    use_alpha: bool,
+    /// The title will be set to `Choose a Color` if set to null.
+    title: ?[]const u8,
+) !Rgba {
+    var arena: std.heap.ArenaAllocator = .init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+
+    const requires_sentinel = comptime isLinuxOrBsd() and options.use_gtk;
+
+    const unwrapped_title = title orelse "Choose a Color";
+    const mod_title = if (requires_sentinel)
+        try std.fmt.allocPrintSentinel(arena_allocator, "{s}", .{unwrapped_title}, 0)
+    else
+        unwrapped_title;
+
+    if (comptime isLinuxOrBsd()) {
+        return if (options.use_gtk)
+            try gtk.colorChooser(color, use_alpha, mod_title)
+        else
+            try zenity.colorChooser(arena_allocator, color, use_alpha, mod_title);
+    }
+
+    return switch (builtin.os.tag) {
+        .windows => try win.colorChooser(color),
         else => @compileError("Unsupported OS"),
     };
 }

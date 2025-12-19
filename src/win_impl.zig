@@ -200,6 +200,24 @@ pub fn message(
     return res == .OK or res == .YES;
 }
 
+pub fn colorChooser(color: zd.Rgba) !zd.Rgba {
+    var custom_colors: [16]u32 = @splat(0xFFFFFFFF);
+
+    var choose_color = std.mem.zeroes(win32.CHOOSECOLORW);
+    choose_color.lStructSize = @sizeOf(win32.CHOOSECOLORW);
+    choose_color.hwndOwner = win32.GetActiveWindow();
+    choose_color.rgbResult = color.toColor();
+    choose_color.lpCustColors = @ptrCast(&custom_colors);
+    choose_color.Flags = @bitCast(win32.CHOOSECOLOR_FLAGS{
+        .RGBINIT = 1,
+        .ANYCOLOR = 1,
+        .FULLOPEN = 1,
+    });
+    if (win32.ChooseColorW(&choose_color) == 0)
+        return error.ChooserInitFailed;
+    return .fromColor(choose_color.rgbResult, 1.0);
+}
+
 const UnsignedHRESULT = std.meta.Int(.unsigned, @typeInfo(win32.HRESULT).int.bits);
 fn HRESULT_FROM_WIN32(err: win32.WIN32_ERROR) win32.HRESULT {
     const hr: UnsignedHRESULT = (@as(UnsignedHRESULT, @intFromEnum(err)) & 0x0000FFFF) |

@@ -3,25 +3,41 @@ const std = @import("std");
 const zd = @import("zd.zig");
 
 fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !struct {
-    result_text: []const u8,
+    text: []const u8,
     term: u1,
 } {
-    var process: std.process.Child = .init(argv, allocator);
-    errdefer _ = process.wait() catch {};
-    process.stdout_behavior = .Pipe;
-    try process.spawn();
+    var proc: std.process.Child = .init(argv, allocator);
+    errdefer _ = proc.wait() catch {};
+    proc.stdout_behavior = .Pipe;
+    try proc.spawn();
 
-    const stdout = process.stdout.?;
-    var stdout_buf: [4096]u8 = undefined;
-    var stdout_reader = stdout.reader(&stdout_buf);
-    const ret = try stdout_reader.interface.allocRemaining(allocator, .unlimited);
+    var buf: [4096]u8 = undefined;
+    var reader = proc.stdout.?.reader(&buf);
+    const ret = try reader.interface.allocRemaining(allocator, .unlimited);
 
-    const term = try process.wait();
+    const term = try proc.wait();
     if (term.Exited > 1) return error.Fail;
     return .{
-        .result_text = ret,
+        .text = ret,
         .term = @intCast(term.Exited),
     };
+}
+
+fn appendFilterArgs(
+    allocator: std.mem.Allocator,
+    args: *std.ArrayList([]const u8),
+    filters: []const zd.Filter,
+) !void {
+    for (filters) |filter| {
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        var w = &aw.writer;
+        try w.print("--file-filter={s} |", .{filter.name});
+        if (filter.exts) |exts| {
+            for (exts) |ext|
+                try w.print(" *.{s}", .{ext});
+        } else try w.writeAll(" *");
+        try args.append(allocator, aw.written());
+    }
 }
 
 pub fn openDialog(
@@ -44,7 +60,7 @@ pub fn openDialog(
         try args.append(allocator, try std.fmt.allocPrint(allocator, "--filename={s}", .{name}));
 
     const res = try runCommand(allocator, args.items);
-    const output = std.mem.trimEnd(u8, res.result_text, "\n");
+    const output = std.mem.trimEnd(u8, res.text, "\n");
     if (!multiple_selection) return try child_allocator.dupe(u8, output);
 
     var result: std.ArrayList([]const u8) = .{};
@@ -70,7 +86,7 @@ pub fn saveDialog(
         try args.append(allocator, try std.fmt.allocPrint(allocator, "--filename={s}", .{name}));
 
     const res = try runCommand(allocator, args.items);
-    return try child_allocator.dupe(u8, std.mem.trimEnd(u8, res.result_text, "\n"));
+    return try child_allocator.dupe(u8, std.mem.trimEnd(u8, res.text, "\n"));
 }
 
 pub fn message(
@@ -84,7 +100,6 @@ pub fn message(
 
     try args.appendSlice(allocator, &.{
         "zenity",
-        "--width=350",
         try std.fmt.allocPrint(allocator, "--title={s}", .{title}),
         try std.fmt.allocPrint(allocator, "--text={s}", .{text}),
     });
@@ -108,23 +123,44 @@ pub fn message(
     return res.term == 0;
 }
 
-fn appendFilterArgs(
+pub fn colorChooser(
     allocator: std.mem.Allocator,
-    args: *std.ArrayList([]const u8),
-    filters: []const zd.Filter,
-) !void {
-    for (filters) |filter| {
-        var aw: std.Io.Writer.Allocating = .init(allocator);
-        var w = &aw.writer;
-        try w.writeAll("--file-filter=");
-        try w.writeAll(filter.name);
-        try w.writeAll(" |");
-        if (filter.exts) |exts| {
-            for (exts) |ext| {
-                try w.writeAll(" *.");
-                try w.writeAll(ext);
-            }
-        } else try w.writeAll(" *");
-        try args.append(allocator, aw.written());
-    }
+    color: zd.Rgba,
+    use_alpha: bool,
+    title: []const u8,
+) !zd.Rgba {
+    var args: std.ArrayList([]const u8) = .{};
+
+    try args.appendSlice(allocator, &.{
+        "zenity",
+        "--color-selection",
+        try std.fmt.allocPrint(allocator, "--title={s}", .{title}),
+        try std.fmt.allocPrint(allocator, "--color=rgba({},{},{},{}", .{
+            color.r,
+            color.g,
+            color.b,
+            @as(f64, @floatFromInt(color.a)) / 255.0,
+        }),
+    });
+
+    const res = try runCommand(allocator, args.items);
+    const values = std.mem.trimEnd(
+        u8,
+        std.mem.trimStart(
+            u8,
+            std.mem.trimStart(u8, res.text, "rgb("),
+            "rgba(",
+        ),
+        ")\n",
+    );
+    var iter = std.mem.splitScalar(u8, values, ',');
+    return .{
+        .r = try std.fmt.parseInt(u8, iter.next() orelse return error.InvalidResult, 10),
+        .g = try std.fmt.parseInt(u8, iter.next() orelse return error.InvalidResult, 10),
+        .b = try std.fmt.parseInt(u8, iter.next() orelse return error.InvalidResult, 10),
+        .a = if (!use_alpha)
+            255
+        else
+            @intFromFloat(try std.fmt.parseFloat(f64, iter.next() orelse "1.0") * 255.0),
+    };
 }

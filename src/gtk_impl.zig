@@ -25,14 +25,14 @@ const ResponseType = enum(c_int) {
     _,
 };
 
-pub const DialogFlags = packed struct(c_uint) {
+const DialogFlags = packed struct(c_uint) {
     modal: bool = false,
     destroy_with_parent: bool = false,
     use_header_bar: bool = false,
     padding: u29 = 0,
 };
 
-pub const MessageType = enum(c_int) {
+const MessageType = enum(c_int) {
     info = 0,
     warning = 1,
     question = 2,
@@ -41,7 +41,7 @@ pub const MessageType = enum(c_int) {
     _,
 };
 
-pub const ButtonsType = enum(c_int) {
+const ButtonsType = enum(c_int) {
     none = 0,
     ok = 1,
     close = 2,
@@ -51,7 +51,32 @@ pub const ButtonsType = enum(c_int) {
     _,
 };
 
-pub const SList = extern struct {
+const FloatRgba = extern struct {
+    r: f64,
+    g: f64,
+    b: f64,
+    a: f64,
+
+    fn fromRgba(rgba: zd.Rgba) FloatRgba {
+        return .{
+            .r = @as(f64, @floatFromInt(rgba.r)) / 255.0,
+            .g = @as(f64, @floatFromInt(rgba.g)) / 255.0,
+            .b = @as(f64, @floatFromInt(rgba.b)) / 255.0,
+            .a = @as(f64, @floatFromInt(rgba.a)) / 255.0,
+        };
+    }
+
+    fn toRgba(self: FloatRgba) zd.Rgba {
+        return .{
+            .r = @intFromFloat(self.r * 255.0),
+            .g = @intFromFloat(self.g * 255.0),
+            .b = @intFromFloat(self.b * 255.0),
+            .a = @intFromFloat(self.a * 255.0),
+        };
+    }
+};
+
+const SList = extern struct {
     f_data: ?*anyopaque,
     f_next: ?*SList,
 };
@@ -201,6 +226,30 @@ pub fn message(
     return run_res == @intFromEnum(ResponseType.ok) or run_res == @intFromEnum(ResponseType.yes);
 }
 
+pub fn colorChooser(
+    color: zd.Rgba,
+    use_alpha: bool,
+    title: [:0]const u8,
+) !zd.Rgba {
+    if (gtk_init_check(null, null) == 0) return error.InitializationFailed;
+
+    const dialog = gtk_color_chooser_dialog_new(title, null);
+    defer {
+        gtk_widget_destroy(dialog);
+        wait();
+    }
+
+    gtk_color_chooser_set_use_alpha(dialog, @intFromBool(use_alpha));
+    var float_color: FloatRgba = .fromRgba(color);
+    gtk_color_chooser_set_rgba(dialog, &float_color);
+
+    if (gtk_dialog_run(dialog) != @intFromEnum(ResponseType.ok))
+        return error.Canceled;
+
+    gtk_color_chooser_get_rgba(dialog, &float_color);
+    return float_color.toRgba();
+}
+
 extern fn gtk_init_check(p_argc: ?*c_int, p_argv: ?*[*][*:0]u8) c_int;
 extern fn gtk_events_pending() c_int;
 extern fn gtk_main_iteration() c_int;
@@ -231,6 +280,11 @@ extern fn gtk_message_dialog_new(
     p_message_format: ?[*:0]const u8,
     ...,
 ) *anyopaque;
+
+extern fn gtk_color_chooser_dialog_new(p_title: ?[*:0]const u8, p_parent: ?*anyopaque) *anyopaque;
+extern fn gtk_color_chooser_set_use_alpha(p_chooser: *anyopaque, p_use_alpha: c_int) void;
+extern fn gtk_color_chooser_set_rgba(p_chooser: *anyopaque, p_color: *const FloatRgba) void;
+extern fn gtk_color_chooser_get_rgba(p_chooser: *anyopaque, p_color: *FloatRgba) void;
 
 extern fn gtk_window_set_title(p_window: *anyopaque, p_title: [*:0]const u8) void;
 extern fn gtk_dialog_run(p_dialog: *anyopaque) c_int;

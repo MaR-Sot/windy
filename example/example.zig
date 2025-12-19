@@ -30,7 +30,21 @@ pub fn main() !void {
     for (multi_path) |path| std.log.err("  {s}", .{path});
     std.log.err("];", .{});
 
-    std.log.err("Info dialog result: {}", .{try zd.message(allocator, .info, .yes_no, "Info dialog", "Info Title")});
-    std.log.err("Warning dialog result: {}", .{try zd.message(allocator, .warn, .ok_cancel, "Warning dialog", "Warning Title")});
-    std.log.err("Error dialog result: {}", .{try zd.message(allocator, .err, .ok, "Error dialog", "Error Title")});
+    std.log.err("Info dialog result: {}", .{
+        try zd.message(allocator, .info, .yes_no, "Info dialog", "Info Title"),
+    });
+    std.log.err("Warning dialog result: {}", .{
+        try zd.message(allocator, .warn, .ok_cancel, "Warning dialog", "Warning Title"),
+    });
+    std.log.err("Error dialog result: {}", .{
+        try zd.message(allocator, .err, .ok, "Error dialog", "Error Title"),
+    });
+
+    const color_res = try zd.colorChooser(
+        allocator,
+        .{ .r = 255, .g = 0, .b = 255, .a = 255 },
+        true,
+        "Color Chooser Test",
+    );
+    std.log.err("Color chooser result: #{X:0>6}", .{color_res.toColor()});
 }
