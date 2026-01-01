@@ -32,7 +32,7 @@ var xkb: struct {
     base_evt: u8 = std.math.maxInt(u8),
 } = .{};
 
-var owned_selection: []u8 = undefined;
+var owned_selection: []u8 = &.{};
 
 pub fn init() !void {
     var screen_num: c_int = undefined;
@@ -235,6 +235,18 @@ pub fn destroyWindow(wind: windy.Window) void {
         std.log.err("Received error `{}` during window destroy", .{e});
 }
 
+pub fn createSurface(comptime vk: type, wind: windy.Window, inst: vk.InstanceProxy) !vk.SurfaceKHR {
+    const sci: vk.XcbSurfaceCreateInfoKHR = .{
+        .connection = @ptrCast(xcb.conn),
+        .window = @intCast(wind.id),
+    };
+    return try inst.createXcbSurfaceKHR(&sci, null);
+}
+
+pub fn vulkanExts() []const [*:0]const u8 {
+    return &.{ "VK_KHR_surface", "VK_KHR_xcb_surface" };
+}
+
 pub fn createCursor(
     argb_raw_img: []const u8,
     w: u16,
@@ -288,239 +300,246 @@ pub fn destroyCursor(cursor: windy.Cursor) void {
 }
 
 pub fn pollEvents() !void {
-    _ = try internalPoll(false);
+    try internalPoll(false);
 }
 
-/// Returns true when we receive a selection notify event, if requested
-fn internalPoll(early_ret: bool) !bool {
+pub fn waitEvent() !void {
+    try handleEvent(c.xcb_wait_for_event(xcb.conn));
+}
+
+/// Returns when we run out of events, or we receive a selection notify event,
+/// if requested through `early_ret`.
+fn internalPoll(early_ret: bool) !void {
     var evt = c.xcb_poll_for_event(xcb.conn);
     while (evt) |e| : (evt = c.xcb_poll_for_event(xcb.conn)) {
-        defer std.c.free(e);
+        try handleEvent(e);
+        if (early_ret and e.*.response_type & ~@as(u8, 0x80) == c.XCB_SELECTION_NOTIFY) return;
+    }
+}
 
-        const resp = e.*.response_type;
-        switch (resp & ~@as(u8, 0x80)) {
-            // TODO: handle these properly
-            c.XCB_REPARENT_NOTIFY, c.XCB_MAP_NOTIFY, c.XCB_PROPERTY_NOTIFY => {},
-            c.XCB_SELECTION_CLEAR => {
-                @memset(windy.clipboard_buffer[0..owned_selection.len], 0);
-                owned_selection = &.{};
-            },
-            c.XCB_SELECTION_NOTIFY => {
-                const notify: *c.xcb_selection_notify_event_t = @ptrCast(e);
+fn handleEvent(e: [*c]c.xcb_generic_event_t) !void {
+    defer std.c.free(e);
 
-                var ty: c.xcb_atom_t = c.XCB_ATOM_NONE;
-                var format: u8 = 0;
-                var bytes: u32 = 1;
-                var offset: u32 = 0;
-                while (bytes > 0) {
-                    var prop_err: [*c]c.xcb_generic_error_t = null;
-                    const reply = c.xcb_get_property_reply(
+    const resp = e.*.response_type;
+    switch (resp & ~@as(u8, 0x80)) {
+        // TODO: handle these properly
+        c.XCB_REPARENT_NOTIFY, c.XCB_MAP_NOTIFY, c.XCB_PROPERTY_NOTIFY => {},
+        c.XCB_SELECTION_CLEAR => {
+            @memset(windy.clipboard_buffer[0..owned_selection.len], 0);
+            owned_selection = &.{};
+        },
+        c.XCB_SELECTION_NOTIFY => {
+            const notify: *c.xcb_selection_notify_event_t = @ptrCast(e);
+
+            var ty: c.xcb_atom_t = c.XCB_ATOM_NONE;
+            var format: u8 = 4;
+            var bytes: u32 = 1;
+            var offset: u32 = 0;
+            while (bytes > 0) {
+                var prop_err: [*c]c.xcb_generic_error_t = null;
+                const reply = c.xcb_get_property_reply(
+                    xcb.conn,
+                    c.xcb_get_property(
                         xcb.conn,
-                        c.xcb_get_property(
-                            xcb.conn,
-                            1,
-                            @intCast(windy.clipboard_window.id),
-                            notify.property,
-                            c.XCB_ATOM_ANY,
-                            offset / 4,
-                            std.math.maxInt(u16) * 4,
-                        ),
-                        &prop_err,
-                    );
-                    defer std.c.free(reply);
-                    if (prop_err) |err| try processErr(err);
+                        1,
+                        @intCast(windy.clipboard_window.id),
+                        notify.property,
+                        c.XCB_ATOM_ANY,
+                        offset / format,
+                        std.math.maxInt(u16),
+                    ),
+                    &prop_err,
+                );
+                defer std.c.free(reply);
+                if (prop_err) |err| try processErr(err);
 
-                    if (offset == 0) {
-                        ty = reply.*.type;
-                        format = reply.*.format / 8;
-                    }
-
-                    const len: u32 = @intCast(c.xcb_get_property_value_length(reply) * format);
-                    if (len <= 0) {
-                        bytes = reply.*.bytes_after;
-                        continue;
-                    }
-
-                    const data: [*]u8 = @ptrCast(c.xcb_get_property_value(reply) orelse return error.InvalidSelection);
-                    @memcpy(windy.clipboard_buffer[offset..][0..len], data[0..len]);
-                    offset += len;
+                if (offset == 0) {
+                    ty = reply.*.type;
+                    format = reply.*.format / 8;
                 }
 
-                owned_selection = windy.clipboard_buffer[0..offset];
-                if (early_ret) return true;
-            },
-            c.XCB_SELECTION_REQUEST => {
-                const req: *c.xcb_selection_request_event_t = @ptrCast(e);
+                const len: u32 = @intCast(c.xcb_get_property_value_length(reply) * format);
+                if (len <= 0) {
+                    bytes = reply.*.bytes_after;
+                    continue;
+                }
 
-                var prop: c.xcb_atom_t = req.property;
-                if (req.target == xcb.targets_atom) {
-                    const targets = [_]c.xcb_atom_t{ xcb.timestamp_atom, xcb.targets_atom, xcb.utf8_atom };
-                    try check(c.xcb_change_property_checked(
-                        xcb.conn,
-                        c.XCB_PROP_MODE_REPLACE,
-                        req.requestor,
-                        req.property,
-                        c.XCB_ATOM_ATOM,
-                        @sizeOf(c.xcb_atom_t) * 8,
-                        targets.len,
-                        &targets,
-                    ));
-                } else if (req.target == xcb.timestamp_atom) {
-                    const cur = std.time.timestamp();
-                    try check(c.xcb_change_property_checked(
-                        xcb.conn,
-                        c.XCB_PROP_MODE_REPLACE,
-                        req.requestor,
-                        req.property,
-                        c.XCB_ATOM_INTEGER,
-                        @sizeOf(@TypeOf(cur)) * 8,
-                        1,
-                        &cur,
-                    ));
-                } else if (req.target == xcb.utf8_atom) try check(c.xcb_change_property_checked(
+                const data: [*]u8 = @ptrCast(c.xcb_get_property_value(reply) orelse return error.InvalidSelection);
+                @memcpy(windy.clipboard_buffer[offset..][0..len], data[0..len]);
+                offset += len;
+            }
+
+            owned_selection = windy.clipboard_buffer[0..offset];
+        },
+        c.XCB_SELECTION_REQUEST => {
+            const req: *c.xcb_selection_request_event_t = @ptrCast(e);
+
+            var prop: c.xcb_atom_t = req.property;
+            if (req.target == xcb.targets_atom) {
+                const targets = [_]c.xcb_atom_t{ xcb.timestamp_atom, xcb.targets_atom, xcb.utf8_atom };
+                try check(c.xcb_change_property_checked(
                     xcb.conn,
                     c.XCB_PROP_MODE_REPLACE,
                     req.requestor,
                     req.property,
-                    req.target,
-                    8,
-                    @intCast(owned_selection.len),
-                    owned_selection.ptr,
-                )) else prop = c.XCB_ATOM_NONE;
+                    c.XCB_ATOM_ATOM,
+                    @sizeOf(c.xcb_atom_t) * 8,
+                    targets.len,
+                    &targets,
+                ));
+            } else if (req.target == xcb.timestamp_atom) {
+                const cur = std.time.timestamp();
+                try check(c.xcb_change_property_checked(
+                    xcb.conn,
+                    c.XCB_PROP_MODE_REPLACE,
+                    req.requestor,
+                    req.property,
+                    c.XCB_ATOM_INTEGER,
+                    @sizeOf(@TypeOf(cur)) * 8,
+                    1,
+                    &cur,
+                ));
+            } else if (req.target == xcb.utf8_atom) try check(c.xcb_change_property_checked(
+                xcb.conn,
+                c.XCB_PROP_MODE_REPLACE,
+                req.requestor,
+                req.property,
+                req.target,
+                8,
+                @intCast(owned_selection.len),
+                owned_selection.ptr,
+            )) else prop = c.XCB_ATOM_NONE;
 
-                const notify: c.xcb_selection_notify_event_t = .{
-                    .response_type = c.XCB_SELECTION_NOTIFY,
-                    .time = c.XCB_CURRENT_TIME,
-                    .requestor = req.requestor,
-                    .selection = req.selection,
-                    .target = req.target,
-                    .property = prop,
-                };
-                try check(c.xcb_send_event_checked(xcb.conn, 0, req.requestor, c.XCB_EVENT_MASK_PROPERTY_CHANGE, @ptrCast(&notify)));
-                try tryFlush();
-            },
-            c.XCB_CLIENT_MESSAGE => {
-                const msg: *c.xcb_client_message_event_t = @ptrCast(e);
-                const wind = windy.window_map.getPtr(msg.window) orelse return error.WindowMissing;
-                if (msg.type == xcb.wm_prot_atom and msg.data.data32[0] == xcb.wind_del_atom)
-                    wind.should_close = true;
-            },
-            c.XCB_CONFIGURE_NOTIFY => {
-                const cfg: *c.xcb_configure_notify_event_t = @ptrCast(e);
-                const wind = windy.window_map.getPtr(cfg.window) orelse return error.WindowMissing;
+            const notify: c.xcb_selection_notify_event_t = .{
+                .response_type = c.XCB_SELECTION_NOTIFY,
+                .time = c.XCB_CURRENT_TIME,
+                .requestor = req.requestor,
+                .selection = req.selection,
+                .target = req.target,
+                .property = prop,
+            };
+            try check(c.xcb_send_event_checked(xcb.conn, 0, req.requestor, c.XCB_EVENT_MASK_PROPERTY_CHANGE, @ptrCast(&notify)));
+            try tryFlush();
+        },
+        c.XCB_CLIENT_MESSAGE => {
+            const msg: *c.xcb_client_message_event_t = @ptrCast(e);
+            const wind = windy.window_map.getPtr(msg.window) orelse return error.WindowMissing;
+            if (msg.type == xcb.wm_prot_atom and msg.data.data32[0] == xcb.wind_del_atom)
+                wind.should_close = true;
+        },
+        c.XCB_CONFIGURE_NOTIFY => {
+            const cfg: *c.xcb_configure_notify_event_t = @ptrCast(e);
+            const wind = windy.window_map.getPtr(cfg.window) orelse return error.WindowMissing;
 
-                if (wind.size.w != cfg.width or wind.size.h != cfg.height) {
-                    wind.size = .{ .w = cfg.width, .h = cfg.height };
-                    if (wind.callbacks.resize) |cb| cb(wind, cfg.width, cfg.height);
-                }
+            if (wind.size.w != cfg.width or wind.size.h != cfg.height) {
+                wind.size = .{ .w = cfg.width, .h = cfg.height };
+                if (wind.callbacks.resize) |cb| cb(wind, cfg.width, cfg.height);
+            }
 
-                // TODO: these could be relative positions
-                if (wind.pos.x != cfg.x or wind.pos.y != cfg.y) {
-                    wind.pos = .{ .x = cfg.x, .y = cfg.y };
-                    if (wind.callbacks.move) |cb| cb(wind, cfg.x, cfg.y);
-                }
-            },
-            c.XCB_EXPOSE => {
-                const exp: *c.xcb_expose_event_t = @ptrCast(e);
-                const wind = windy.window_map.getPtr(exp.window) orelse return error.WindowMissing;
-                if (wind.callbacks.refresh) |cb| cb(wind);
-            },
-            c.XCB_KEY_PRESS => {
-                const press: *c.xcb_key_press_event_t = @ptrCast(e);
-                const wind = windy.window_map.getPtr(press.event) orelse return error.WindowMissing;
-                const sym = c.xkb_state_key_get_one_sym(xkb.state, press.detail);
-                const mods = keyStateToMods(press.state);
-                if (wind.callbacks.key) |cb| cb(wind, .press, symToKey(sym), mods);
-                if (wind.callbacks.char) |cb| cb(wind, .press, @intCast(c.xkb_keysym_to_utf32(sym)), mods);
-            },
-            c.XCB_KEY_RELEASE => {
-                const release: *c.xcb_key_release_event_t = @ptrCast(e);
-                const wind = windy.window_map.getPtr(release.event) orelse return error.WindowMissing;
-                const sym = c.xkb_state_key_get_one_sym(xkb.state, release.detail);
-                const mods = keyStateToMods(release.state);
-                if (wind.callbacks.key) |cb| cb(wind, .release, symToKey(sym), mods);
-                if (wind.callbacks.char) |cb| cb(wind, .release, @intCast(c.xkb_keysym_to_utf32(sym)), mods);
-            },
-            c.XCB_BUTTON_PRESS => {
-                const press: *c.xcb_button_press_event_t = @ptrCast(e);
-                const wind = windy.window_map.getPtr(press.event) orelse return error.WindowMissing;
-                const mods = mouseStateToMods(press.state);
-                const scrollCb = wind.callbacks.scroll;
-                switch (press.detail) {
-                    4 => (scrollCb orelse return false)(wind, 0.0, 1.0, mods),
-                    5 => (scrollCb orelse return false)(wind, 0.0, -1.0, mods),
-                    6 => (scrollCb orelse return false)(wind, 1.0, 0.0, mods),
-                    7 => (scrollCb orelse return false)(wind, -1.0, 0.0, mods),
-                    else => if (wind.callbacks.mouse) |cb| cb(
-                        wind,
-                        .press,
-                        buttonToMouse(press.detail),
-                        press.event_x,
-                        press.event_y,
-                        mods,
-                    ),
-                }
-            },
-            c.XCB_BUTTON_RELEASE => {
-                const release: *c.xcb_button_release_event_t = @ptrCast(e);
-                const wind = windy.window_map.getPtr(release.event) orelse return error.WindowMissing;
-                const mods = mouseStateToMods(release.state);
-                const scrollCb = wind.callbacks.scroll;
-                switch (release.detail) {
-                    4 => (scrollCb orelse return false)(wind, 0.0, 1.0, mods),
-                    5 => (scrollCb orelse return false)(wind, 0.0, -1.0, mods),
-                    6 => (scrollCb orelse return false)(wind, 1.0, 0.0, mods),
-                    7 => (scrollCb orelse return false)(wind, -1.0, 0.0, mods),
-                    else => if (wind.callbacks.mouse) |cb| cb(
-                        wind,
-                        .release,
-                        buttonToMouse(release.detail),
-                        release.event_x,
-                        release.event_y,
-                        mods,
-                    ),
-                }
-            },
-            c.XCB_MOTION_NOTIFY => {
-                const move: *c.xcb_motion_notify_event_t = @ptrCast(e);
-                const wind = windy.window_map.getPtr(move.event) orelse return error.WindowMissing;
-                if (wind.callbacks.mouseMove) |cb| cb(wind, move.event_x, move.event_y, mouseStateToMods(move.state));
-            },
-            else => |ty| if (resp == xkb.base_evt) {
-                const xkb_any_event: *extern struct {
-                    response_type: u8,
-                    xkb_type: u8,
-                    sequence: u16,
-                    time: c.xcb_timestamp_t,
-                    device_id: u8,
-                } = @ptrCast(e);
+            // TODO: these could be relative positions
+            if (wind.pos.x != cfg.x or wind.pos.y != cfg.y) {
+                wind.pos = .{ .x = cfg.x, .y = cfg.y };
+                if (wind.callbacks.move) |cb| cb(wind, cfg.x, cfg.y);
+            }
+        },
+        c.XCB_EXPOSE => {
+            const exp: *c.xcb_expose_event_t = @ptrCast(e);
+            const wind = windy.window_map.getPtr(exp.window) orelse return error.WindowMissing;
+            if (wind.callbacks.refresh) |cb| cb(wind);
+        },
+        c.XCB_KEY_PRESS => {
+            const press: *c.xcb_key_press_event_t = @ptrCast(e);
+            const wind = windy.window_map.getPtr(press.event) orelse return error.WindowMissing;
+            const sym = c.xkb_state_key_get_one_sym(xkb.state, press.detail);
+            const mods = keyStateToMods(press.state);
+            if (wind.callbacks.key) |cb| cb(wind, .press, symToKey(sym), mods);
+            if (wind.callbacks.char) |cb| cb(wind, .press, @intCast(c.xkb_keysym_to_utf32(sym)), mods);
+        },
+        c.XCB_KEY_RELEASE => {
+            const release: *c.xcb_key_release_event_t = @ptrCast(e);
+            const wind = windy.window_map.getPtr(release.event) orelse return error.WindowMissing;
+            const sym = c.xkb_state_key_get_one_sym(xkb.state, release.detail);
+            const mods = keyStateToMods(release.state);
+            if (wind.callbacks.key) |cb| cb(wind, .release, symToKey(sym), mods);
+            if (wind.callbacks.char) |cb| cb(wind, .release, @intCast(c.xkb_keysym_to_utf32(sym)), mods);
+        },
+        c.XCB_BUTTON_PRESS => {
+            const press: *c.xcb_button_press_event_t = @ptrCast(e);
+            const wind = windy.window_map.getPtr(press.event) orelse return error.WindowMissing;
+            const mods = mouseStateToMods(press.state);
+            const scrollCb = wind.callbacks.scroll;
+            switch (press.detail) {
+                4 => (scrollCb orelse return)(wind, 0.0, 1.0, mods),
+                5 => (scrollCb orelse return)(wind, 0.0, -1.0, mods),
+                6 => (scrollCb orelse return)(wind, 1.0, 0.0, mods),
+                7 => (scrollCb orelse return)(wind, -1.0, 0.0, mods),
+                else => if (wind.callbacks.mouse) |cb| cb(
+                    wind,
+                    .press,
+                    buttonToMouse(press.detail),
+                    press.event_x,
+                    press.event_y,
+                    mods,
+                ),
+            }
+        },
+        c.XCB_BUTTON_RELEASE => {
+            const release: *c.xcb_button_release_event_t = @ptrCast(e);
+            const wind = windy.window_map.getPtr(release.event) orelse return error.WindowMissing;
+            const mods = mouseStateToMods(release.state);
+            const scrollCb = wind.callbacks.scroll;
+            switch (release.detail) {
+                4 => (scrollCb orelse return)(wind, 0.0, 1.0, mods),
+                5 => (scrollCb orelse return)(wind, 0.0, -1.0, mods),
+                6 => (scrollCb orelse return)(wind, 1.0, 0.0, mods),
+                7 => (scrollCb orelse return)(wind, -1.0, 0.0, mods),
+                else => if (wind.callbacks.mouse) |cb| cb(
+                    wind,
+                    .release,
+                    buttonToMouse(release.detail),
+                    release.event_x,
+                    release.event_y,
+                    mods,
+                ),
+            }
+        },
+        c.XCB_MOTION_NOTIFY => {
+            const move: *c.xcb_motion_notify_event_t = @ptrCast(e);
+            const wind = windy.window_map.getPtr(move.event) orelse return error.WindowMissing;
+            if (wind.callbacks.mouseMove) |cb| cb(wind, move.event_x, move.event_y, mouseStateToMods(move.state));
+        },
+        else => |ty| if (resp == xkb.base_evt) {
+            const xkb_any_event: *extern struct {
+                response_type: u8,
+                xkb_type: u8,
+                sequence: u16,
+                time: c.xcb_timestamp_t,
+                device_id: u8,
+            } = @ptrCast(e);
 
-                if (xkb_any_event.device_id == xkb.core_dvid) switch (xkb_any_event.xkb_type) {
-                    c.XCB_XKB_NEW_KEYBOARD_NOTIFY => {
-                        const new_kb: *c.xcb_xkb_new_keyboard_notify_event_t = @ptrCast(e);
-                        if (new_kb.changed & c.XCB_XKB_NKN_DETAIL_KEYCODES != 0)
-                            try updateKeymaps();
-                    },
-                    c.XCB_XKB_MAP_NOTIFY => try updateKeymaps(),
-                    c.XCB_XKB_STATE_NOTIFY => {
-                        const state: *c.xcb_xkb_state_notify_event_t = @ptrCast(e);
-                        _ = c.xkb_state_update_mask(
-                            xkb.state,
-                            state.baseMods,
-                            state.latchedMods,
-                            state.lockedMods,
-                            @intCast(state.baseGroup),
-                            @intCast(state.latchedGroup),
-                            @intCast(state.lockedGroup),
-                        );
-                    },
-                    else => |xkb_ty| std.log.debug("Unhandled XKB event type: {}", .{xkb_ty}),
-                };
-            } else std.log.debug("Unhandled XCB event type: {}", .{ty}),
-        }
+            if (xkb_any_event.device_id == xkb.core_dvid) switch (xkb_any_event.xkb_type) {
+                c.XCB_XKB_NEW_KEYBOARD_NOTIFY => {
+                    const new_kb: *c.xcb_xkb_new_keyboard_notify_event_t = @ptrCast(e);
+                    if (new_kb.changed & c.XCB_XKB_NKN_DETAIL_KEYCODES != 0)
+                        try updateKeymaps();
+                },
+                c.XCB_XKB_MAP_NOTIFY => try updateKeymaps(),
+                c.XCB_XKB_STATE_NOTIFY => {
+                    const state: *c.xcb_xkb_state_notify_event_t = @ptrCast(e);
+                    _ = c.xkb_state_update_mask(
+                        xkb.state,
+                        state.baseMods,
+                        state.latchedMods,
+                        state.lockedMods,
+                        @intCast(state.baseGroup),
+                        @intCast(state.latchedGroup),
+                        @intCast(state.lockedGroup),
+                    );
+                },
+                else => |xkb_ty| std.log.debug("Unhandled XKB event type: {}", .{xkb_ty}),
+            };
+        } else std.log.debug("Unhandled XCB event type: {}", .{ty}),
     }
-
-    return false;
 }
 
 pub fn getClipboard() ![]const u8 {
@@ -549,9 +568,7 @@ pub fn getClipboard() ![]const u8 {
     ));
     try tryFlush();
 
-    const start_time = std.time.timestamp();
-    while (!try internalPoll(true) or std.time.timestamp() - start_time > 500) {}
-
+    try internalPoll(true);
     return owned_selection;
 }
 

@@ -5,7 +5,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
 
     const stbi_dep = b.dependency("stbi", .{ .target = target, .optimize = optimize });
-    const windy_dep = b.dependency("windy", .{ .target = target, .optimize = optimize });
+    const windy_dep = b.dependency("windy", .{
+        .target = target,
+        .optimize = optimize,
+        .vulkan_support = true,
+    });
     const exe = b.addExecutable(.{
         .name = "Example",
         .root_module = b.createModule(.{

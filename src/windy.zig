@@ -32,9 +32,10 @@ pub var clipboard_window: *Window = undefined;
 pub var clipboard_buffer: []u8 = &.{};
 
 var windy_allocator: ?std.mem.Allocator = null;
+var vulkan_dyn_lib: if (options.vulkan_support) std.DynLib else void = undefined;
 
-/// Specify `clip_buf` with an appropriately sized buffer if you
-/// wish to use `getClipboard()`, as the result is copied and stored there
+/// Specify `clip_buf` with an appropriately sized buffer if you wish to use
+/// `getClipboard()` or `setClipboard()`, as the result/input is copied and stored there
 pub fn init(allocator: std.mem.Allocator, clip_buf: []u8) !void {
     windy_allocator = allocator;
     try wind_ns.init();
@@ -42,6 +43,14 @@ pub fn init(allocator: std.mem.Allocator, clip_buf: []u8) !void {
     try window_map.put(allocator, wind.id, wind);
     clipboard_window = window_map.getPtr(wind.id) orelse unreachable;
     clipboard_buffer = clip_buf;
+
+    if (options.vulkan_support)
+        vulkan_dyn_lib = try .open(switch (builtin.os.tag) {
+            .windows => "vulkan-1.dll",
+            .macos => "libvulkan.1.dylib",
+            .openbsd, .netbsd => "libvulkan.so",
+            else => "libvulkan.so.1",
+        });
 }
 
 pub fn deinit() void {
@@ -49,15 +58,24 @@ pub fn deinit() void {
     clipboard_window.destroy();
     wind_ns.deinit();
     window_map.deinit(allocator);
+
+    if (options.vulkan_support) vulkan_dyn_lib.close();
 }
 
 /// Poll for incoming events, after which the registered (`register[...]Cb()`) events
-/// get their callbacks dispatched, if there were any events.
+/// get their callbacks dispatched, if there were any.
 pub fn pollEvents() !void {
     try wind_ns.pollEvents();
 }
 
-/// Note: This polls events until the clipboard string is dispatched (or until a 500ms timeout) on X11.
+/// Processes a single event, or blocks until it receives one,
+/// after which the registered (`register[...]Cb()`) events
+/// get their callbacks dispatched, if there were any.
+pub fn waitEvent() !void {
+    try wind_ns.waitEvent();
+}
+
+/// Note: This polls events until the clipboard string is dispatched on X11.
 /// If this is a problem, wrap it in `io.async()` or similar once they're available.
 pub fn getClipboard() ![]const u8 {
     return try wind_ns.getClipboard();
@@ -65,6 +83,14 @@ pub fn getClipboard() ![]const u8 {
 
 pub fn setClipboard(new_buf: []const u8) !void {
     try wind_ns.setClipboard(new_buf);
+}
+
+pub fn vulkanProcAddr(comptime vk: type, _: vk.Instance, name: [*:0]const u8) vk.PfnVoidFunction {
+    return vulkan_dyn_lib.lookup(vk.PfnVoidFunction, std.mem.span(name)) orelse null;
+}
+
+pub fn vulkanExts() []const [*:0]const u8 {
+    return wind_ns.vulkanExts();
 }
 
 /// Frees the results of `openDialog()` and `saveDialog()`.
@@ -243,6 +269,11 @@ pub const Window = struct {
             const dummy_ctx: std.hash_map.AutoContext(Window.Id) = undefined;
             window_map.rehash(&dummy_ctx);
         }
+    }
+
+    pub fn createSurface(self: Window, comptime vk: type, inst: vk.InstanceProxy) !vk.SurfaceKHR {
+        if (!options.vulkan_support) @compileError("Please enable Vulkan support with `-Dvulkan_support=true`");
+        return try wind_ns.createSurface(vk, self, inst);
     }
 
     pub fn setTitle(self: Window, title: [:0]const u8) !void {

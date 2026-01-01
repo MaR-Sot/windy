@@ -11,6 +11,7 @@ pub fn build(b: *std.Build) void {
             \\Whether to use GTK as the dialog provider on Linux / BSDs (requires GTK3 development headers).
             \\Zenity is used otherwise and assumed to exist on the computer running the program.
         ) orelse true,
+        .vulkan_support = b.option(bool, "vulkan_support", "Whether to provide utility functions for use with Vulkan.") orelse false,
     };
 
     const opt_step = b.addOptions();
