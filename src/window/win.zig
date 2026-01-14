@@ -4,24 +4,40 @@ const L = std.unicode.wtf8ToWtf16LeStringLiteral;
 const win32 = @import("win32").everything;
 
 const windy = @import("../windy.zig");
+const errors = @import("errors.zig");
+const InitError = errors.WinInitError;
+const IconError = errors.WinIconError;
+
+const EventError = errors.WinEventError;
+const SetClipboardError = errors.WinSetClipboardError;
+const GetClipboardError = errors.WinGetClipboardError;
+const CreateWindowError = errors.WinCreateWindowError;
+const ClipboardWindowError = errors.WinClipboardWindowError;
+const CreateCursorError = errors.WinCreateCursorError;
+const SetTitleError = errors.WinSetTitleError;
+const SetCursorError = errors.WinSetCursorError;
+const NormalHintError = errors.WinNormalHintError;
+const ResizeError = errors.WinResizeError;
+const MoveError = errors.WinMoveError;
 
 var main_class: u16 = 0;
 var clipboard_class: u16 = 0;
 var win32_inst: win32.HINSTANCE = undefined;
 
-pub fn init() !void {
+pub fn init() InitError!void {
     const init_res = win32.CoInitializeEx(null, .{ .APARTMENTTHREADED = 1, .DISABLE_OLE1DDE = 1 });
     if (init_res != win32.RPC_E_CHANGED_MODE and win32.FAILED(init_res)) {
         printError();
-        return error.ComInit;
+        return InitError.ComInit;
     }
 
     win32_inst = win32.GetModuleHandleW(null) orelse {
         printError();
-        return error.Instance;
+        return InitError.Instance;
     };
 
-    var wc = std.mem.zeroes(win32.WNDCLASSW);
+    var wc = std.mem.zeroes(win32.WNDCLASSEXW);
+    wc.cbSize = @sizeOf(win32.WNDCLASSEXW);
     wc.style = .{ .HREDRAW = 1, .VREDRAW = 1, .OWNDC = 1 };
     wc.lpfnWndProc = windowProc;
     wc.hInstance = win32_inst;
@@ -43,13 +59,13 @@ pub fn init() !void {
         .{ .DEFAULTSIZE = 1, .SHARED = 1 },
     ) orelse {
         printError();
-        return error.WindowIcon;
+        return InitError.WindowIcon;
     });
 
-    main_class = win32.RegisterClassW(&wc);
+    main_class = win32.RegisterClassExW(&wc);
     if (main_class == 0) {
         printError();
-        return error.MainClass;
+        return InitError.MainClass;
     }
 
     var wc_clip = std.mem.zeroes(win32.WNDCLASSEXW);
@@ -62,7 +78,7 @@ pub fn init() !void {
     clipboard_class = win32.RegisterClassExW(&wc_clip);
     if (clipboard_class == 0) {
         printError();
-        return error.ClipboardClass;
+        return InitError.ClipboardClass;
     }
 }
 
@@ -70,7 +86,7 @@ pub fn deinit() void {
     win32.CoUninitialize();
 }
 
-pub fn createWindow(allocator: std.mem.Allocator, w: u16, h: u16, opts: windy.Window.Options) !windy.Window {
+pub fn createWindow(allocator: std.mem.Allocator, w: u16, h: u16, opts: windy.Window.Options) CreateWindowError!windy.Window {
     const wide_title = if (opts.title) |t| try std.unicode.wtf8ToWtf16LeAllocZ(allocator, t) else L("Windy Window");
     defer if (opts.title != null) allocator.free(wide_title);
 
@@ -94,7 +110,7 @@ pub fn createWindow(allocator: std.mem.Allocator, w: u16, h: u16, opts: windy.Wi
         null,
     ) orelse {
         printError();
-        return error.Window;
+        return CreateWindowError.CreateWindow;
     };
 
     _ = win32.ShowWindow(hwnd, win32.SW_SHOWDEFAULT);
@@ -106,7 +122,7 @@ pub fn destroyWindow(wind: windy.Window) void {
     _ = win32.DestroyWindow(@ptrFromInt(wind.id));
 }
 
-pub fn clipboardWindow() !windy.Window {
+pub fn clipboardWindow() ClipboardWindowError!windy.Window {
     const style: win32.WINDOW_STYLE = .{ .CLIPSIBLINGS = 1, .CLIPCHILDREN = 1 };
     const ex_style = win32.WS_EX_OVERLAPPEDWINDOW;
 
@@ -125,24 +141,24 @@ pub fn clipboardWindow() !windy.Window {
         null,
     ) orelse {
         printError();
-        return error.Window;
+        return ClipboardWindowError.CreateWindow;
     };
 
     return .{ .id = @intFromPtr(hwnd), .platform = .{ .style = style, .ex_style = ex_style } };
 }
 
-pub fn setTitle(allocator: std.mem.Allocator, wid: windy.Window.Id, title: [:0]const u8) !void {
+pub fn setTitle(allocator: std.mem.Allocator, wid: windy.Window.Id, title: [:0]const u8) SetTitleError!void {
     const wide_title = try std.unicode.wtf8ToWtf16LeAllocZ(allocator, title);
     defer allocator.free(wide_title);
     _ = win32.SetWindowTextW(@ptrFromInt(wid), wide_title);
 }
 
-pub fn setCursor(wind: *windy.Window, cursor: windy.Cursor) !void {
+pub fn setCursor(wind: *windy.Window, cursor: windy.Cursor) SetCursorError!void {
     wind.platform.cursor = cursor;
     _ = win32.SetCursor(@ptrFromInt(cursor.id));
 }
 
-pub fn setMinWindowSize(wind: *windy.Window, min_size: windy.Size) !void {
+pub fn setMinWindowSize(wind: *windy.Window, min_size: windy.Size) NormalHintError!void {
     wind.platform.min_size = min_size;
     if (min_size.eql(.invalid)) return;
 
@@ -158,7 +174,7 @@ pub fn setMinWindowSize(wind: *windy.Window, min_size: windy.Size) !void {
     );
 }
 
-pub fn setMaxWindowSize(wind: *windy.Window, max_size: windy.Size) !void {
+pub fn setMaxWindowSize(wind: *windy.Window, max_size: windy.Size) NormalHintError!void {
     wind.platform.max_size = max_size;
     if (max_size.eql(.invalid)) return;
 
@@ -174,7 +190,7 @@ pub fn setMaxWindowSize(wind: *windy.Window, max_size: windy.Size) !void {
     );
 }
 
-pub fn setWindowResizeIncr(wind: *windy.Window, incr_size: windy.Size) !void {
+pub fn setWindowResizeIncr(wind: *windy.Window, incr_size: windy.Size) NormalHintError!void {
     wind.platform.resize_incr = incr_size;
     if (incr_size.eql(.invalid)) return;
 
@@ -191,7 +207,7 @@ pub fn setWindowResizeIncr(wind: *windy.Window, incr_size: windy.Size) !void {
     );
 }
 
-pub fn setWindowAspect(wind: *windy.Window, numerator: u16, denominator: u16) !void {
+pub fn setWindowAspect(wind: *windy.Window, numerator: u16, denominator: u16) NormalHintError!void {
     wind.platform.aspect_numerator = numerator;
     wind.platform.aspect_denominator = denominator;
     var area: win32.RECT = undefined;
@@ -207,7 +223,7 @@ pub fn setWindowAspect(wind: *windy.Window, numerator: u16, denominator: u16) !v
     );
 }
 
-pub fn resize(wind: *windy.Window, size: windy.Size) !void {
+pub fn resize(wind: *windy.Window, size: windy.Size) ResizeError!void {
     var area: win32.RECT = undefined;
     _ = win32.GetWindowRect(@ptrFromInt(wind.id), &area);
     _ = win32.MoveWindow(
@@ -220,7 +236,7 @@ pub fn resize(wind: *windy.Window, size: windy.Size) !void {
     );
 }
 
-pub fn move(wind: *windy.Window, pos: windy.Position) !void {
+pub fn move(wind: *windy.Window, pos: windy.Position) MoveError!void {
     var area: win32.RECT = undefined;
     _ = win32.GetWindowRect(@ptrFromInt(wind.id), &area);
     _ = win32.MoveWindow(
@@ -233,13 +249,13 @@ pub fn move(wind: *windy.Window, pos: windy.Position) !void {
     );
 }
 
-pub fn getClipboard() ![]const u8 {
+pub fn getClipboard() GetClipboardError![]const u8 {
     var fba: std.heap.FixedBufferAllocator = .init(windy.clipboard_buffer);
     const allocator = fba.allocator();
 
     var tries: usize = 0;
     while (win32.OpenClipboard(@ptrFromInt(windy.clipboard_window.id)) == 0) : (tries += 1) {
-        if (tries == 5) return error.ClipboardLocked;
+        if (tries == 5) return GetClipboardError.ClipboardLocked;
         std.Thread.sleep(2 * std.time.ns_per_ms);
     }
     defer _ = win32.CloseClipboard();
@@ -247,25 +263,25 @@ pub fn getClipboard() ![]const u8 {
     const obj: isize = @intCast(@intFromPtr(win32.GetClipboardData(@intFromEnum(win32.CF_UNICODETEXT)) orelse {
         if (win32.GetLastError() == .ERROR_NOT_FOUND) return &.{};
         printError();
-        return error.ClipboardGet;
+        return GetClipboardError.ClipboardGet;
     }));
 
     const lock = win32.GlobalLock(obj) orelse {
         if (win32.GetLastError() == .ERROR_DISCARDED) return &.{};
         printError();
-        return error.Lock;
+        return GetClipboardError.MemoryLock;
     };
     defer _ = win32.GlobalUnlock(obj);
 
     const text: [*:0]const u16 = @ptrCast(@alignCast(lock));
-    return std.unicode.wtf16LeToWtf8Alloc(allocator, std.mem.span(text)) catch error.OutOfMemory;
+    return std.unicode.wtf16LeToWtf8Alloc(allocator, std.mem.span(text)) catch GetClipboardError.OutOfMemory;
 }
 
-pub fn setClipboard(new_buf: []const u8) !void {
+pub fn setClipboard(new_buf: []const u8) SetClipboardError!void {
     if (new_buf.len == 0) {
         var tries: usize = 0;
         while (win32.OpenClipboard(@ptrFromInt(windy.clipboard_window.id)) == 0) : (tries += 1) {
-            if (tries == 5) return error.ClipboardLocked;
+            if (tries == 5) return SetClipboardError.ClipboardLocked;
             std.Thread.sleep(2 * std.time.ns_per_ms);
         }
         _ = win32.EmptyClipboard();
@@ -280,13 +296,13 @@ pub fn setClipboard(new_buf: []const u8) !void {
     const obj = win32.GlobalAlloc(win32.GMEM_MOVEABLE, wide_text.len * @sizeOf(u16));
     if (obj == 0) {
         printError();
-        return error.OutOfMemory;
+        return SetClipboardError.OutOfMemory;
     }
     errdefer _ = win32.GlobalFree(obj);
 
     const lock = win32.GlobalLock(obj) orelse {
         printError();
-        return error.Lock;
+        return SetClipboardError.MemoryLock;
     };
     const buffer: [*]u16 = @ptrCast(@alignCast(lock));
     @memcpy(buffer, wide_text);
@@ -294,19 +310,19 @@ pub fn setClipboard(new_buf: []const u8) !void {
 
     var tries: usize = 0;
     while (win32.OpenClipboard(@ptrFromInt(windy.clipboard_window.id)) == 0) : (tries += 1) {
-        if (tries == 5) return error.ClipboardLocked;
+        if (tries == 5) return SetClipboardError.ClipboardLocked;
         std.Thread.sleep(2 * std.time.ns_per_ms);
     }
 
     _ = win32.EmptyClipboard();
     if (win32.SetClipboardData(@intFromEnum(win32.CF_UNICODETEXT), buffer) == null) {
         printError();
-        return error.ClipboardSet;
+        return SetClipboardError.ClipboardSet;
     }
     _ = win32.CloseClipboard();
 }
 
-pub fn pollEvents() !void {
+pub fn pollEvents() EventError!void {
     var msg: win32.MSG = undefined;
     while (win32.PeekMessageW(&msg, null, 0, 0, win32.PM_REMOVE) != 0) {
         _ = win32.TranslateMessage(&msg);
@@ -314,7 +330,7 @@ pub fn pollEvents() !void {
     }
 }
 
-pub fn waitEvent() !void {
+pub fn waitEvent() EventError!void {
     _ = win32.MsgWaitForMultipleObjects(0, null, win32.FALSE, win32.INFINITE, win32.QS_ALLINPUT);
 }
 
@@ -330,7 +346,7 @@ pub fn vulkanExts() []const [*:0]const u8 {
     return &.{ "VK_KHR_surface", "VK_KHR_win32_surface" };
 }
 
-pub fn createCursor(argb_raw_img: []const u8, w: u16, h: u16, x_hot: u16, y_hot: u16) !windy.Cursor {
+pub fn createCursor(argb_raw_img: []const u8, w: u16, h: u16, x_hot: u16, y_hot: u16) CreateCursorError!windy.Cursor {
     return .{ .id = @intFromPtr(try icon(argb_raw_img, w, h, x_hot, y_hot, false)) };
 }
 
@@ -338,7 +354,7 @@ pub fn destroyCursor(cursor: windy.Cursor) void {
     _ = win32.DestroyIcon(@ptrFromInt(cursor.id));
 }
 
-fn icon(argb_raw_img: []const u8, w: u16, h: u16, x_hot: u16, y_hot: u16, is_icon: bool) !win32.HICON {
+fn icon(argb_raw_img: []const u8, w: u16, h: u16, x_hot: u16, y_hot: u16, is_icon: bool) IconError!win32.HICON {
     var bmp_header = std.mem.zeroes(win32.BITMAPV5HEADER);
     bmp_header.bV5Size = @sizeOf(win32.BITMAPV5HEADER);
     bmp_header.bV5Width = w;
@@ -354,21 +370,21 @@ fn icon(argb_raw_img: []const u8, w: u16, h: u16, x_hot: u16, y_hot: u16, is_ico
 
     const dv_ctx = win32.GetDC(null) orelse {
         printError();
-        return error.DeviceContext;
+        return IconError.DeviceContext;
     };
     defer _ = win32.ReleaseDC(null, dv_ctx);
 
     var out_px: [*]u8 = undefined;
     const color = win32.CreateDIBSection(dv_ctx, @ptrCast(&bmp_header), win32.DIB_RGB_COLORS, @ptrCast(&out_px), null, 0) orelse {
         printError();
-        return error.DibSection;
+        return IconError.DibSection;
     };
     defer _ = win32.DeleteObject(color);
     @memcpy(out_px[0 .. w * h * 4], argb_raw_img);
 
     const mask = win32.CreateBitmap(w, h, 1, 1, null) orelse {
         printError();
-        return error.IconMask;
+        return IconError.IconMask;
     };
     defer _ = win32.DeleteObject(mask);
 
@@ -382,7 +398,7 @@ fn icon(argb_raw_img: []const u8, w: u16, h: u16, x_hot: u16, y_hot: u16, is_ico
 
     return win32.CreateIconIndirect(&icon_info) orelse {
         printError();
-        return error.IconCreate;
+        return IconError.IconCreate;
     };
 }
 
@@ -512,20 +528,21 @@ fn windowProc(hwnd: win32.HWND, msg: u32, wp: win32.WPARAM, lp: win32.LPARAM) ca
             }
         },
         win32.WM_KEYDOWN, win32.WM_SYSKEYDOWN, win32.WM_KEYUP, win32.WM_SYSKEYUP => {
-            if (wp == @intFromEnum(win32.VK_PROCESSKEY)) return 0;
+            const vk = std.enums.fromInt(win32.VIRTUAL_KEY, wp) orelse break :process;
+            if (vk == .PROCESSKEY) return 0;
 
             const state: windy.PressState = if (wordHigher(lp) & win32.KF_UP != 0) .release else .press;
-            switch (wp) {
-                @intFromEnum(win32.VK_SHIFT) => wind.platform.mods.shift = state == .press,
-                @intFromEnum(win32.VK_CAPITAL) => {
+            switch (vk) {
+                .SHIFT => wind.platform.mods.shift = state == .press,
+                .CAPITAL => {
                     if (state == .press) wind.platform.mods.caps_lock = !wind.platform.mods.caps_lock;
                 },
-                @intFromEnum(win32.VK_CONTROL) => wind.platform.mods.ctrl = state == .press,
-                @intFromEnum(win32.VK_MENU) => wind.platform.mods.alt = state == .press,
-                @intFromEnum(win32.VK_NUMLOCK) => {
+                .CONTROL => wind.platform.mods.ctrl = state == .press,
+                .MENU => wind.platform.mods.alt = state == .press,
+                .NUMLOCK => {
                     if (state == .press) wind.platform.mods.num_lock = !wind.platform.mods.num_lock;
                 },
-                @intFromEnum(win32.VK_LWIN), @intFromEnum(win32.VK_RWIN) => wind.platform.mods.super = state == .press,
+                .LWIN, .RWIN => wind.platform.mods.super = state == .press,
                 else => {},
             }
 
@@ -779,16 +796,16 @@ fn shortHigher(x: anytype) i16 {
 }
 
 /// Equivalent of win32's `GET_X_LPARAM`.
-fn lpX(lParam: win32.LPARAM) i16 {
-    return @intCast(lParam & 0xFFFF);
+fn lpX(lp: win32.LPARAM) i16 {
+    return @intCast(lp & 0xFFFF);
 }
 
 /// Equivalent of win32's `GET_Y_LPARAM`.
-fn lpY(lParam: win32.LPARAM) i16 {
-    return @intCast(lParam >> 16 & 0xFFFF);
+fn lpY(lp: win32.LPARAM) i16 {
+    return @intCast(lp >> 16 & 0xFFFF);
 }
 
 /// Equivalent of win32's `MAKEINTATOM`.
-inline fn makeIntAtom(atom: u16) ?[*:0]align(1) const u16 {
+fn makeIntAtom(atom: u16) ?[*:0]align(1) const u16 {
     return @ptrFromInt(atom);
 }

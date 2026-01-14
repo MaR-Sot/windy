@@ -1,6 +1,25 @@
 const std = @import("std");
 
 const windy = @import("../windy.zig");
+const errors = @import("errors.zig");
+const ConnError = errors.XcbConnectionError;
+const GenericError = errors.XcbGenericError;
+const FlushError = errors.XcbFlushError;
+const FlushedCallError = errors.XcbFlushedCallError;
+const KeymapError = errors.XcbKeymapError;
+const InitError = errors.XcbInitError;
+const EventError = errors.XcbEventError;
+const GetClipboardError = errors.XcbGetClipboardError;
+const SetClipboardError = errors.XcbSetClipboardError;
+const CreateWindowError = errors.XcbCreateWindowError;
+const ClipboardWindowError = errors.XcbClipboardWindowError;
+const CreateCursorError = errors.XcbCreateCursorError;
+const SetTitleError = errors.XcbSetTitleError;
+const SetCursorError = errors.XcbSetCursorError;
+const EventRegisterError = errors.XcbEventRegisterError;
+const NormalHintError = errors.XcbNormalHintError;
+const ResizeError = errors.XcbResizeError;
+const MoveError = errors.XcbMoveError;
 
 const c = @cImport({
     @cInclude("xcb/xcb.h");
@@ -73,7 +92,7 @@ var xkb: struct {
 
 var owned_selection: []u8 = &.{};
 
-pub fn init() !void {
+pub fn init() InitError!void {
     var screen_num: i32 = 0;
     xcb.conn = c.xcb_connect(null, &screen_num).?;
     errdefer c.xcb_disconnect(xcb.conn);
@@ -88,7 +107,7 @@ pub fn init() !void {
     xcb.timestamp_atom = try atom("TIMESTAMP");
 
     var iter = c.xcb_setup_roots_iterator(c.xcb_get_setup(xcb.conn));
-    if (iter.rem < screen_num) return error.InvalidScreen;
+    if (iter.rem < screen_num) return InitError.NoScreen;
     for (0..@as(usize, @intCast(screen_num))) |_|
         c.xcb_screen_next(&iter);
     xcb.screen = iter.data;
@@ -103,15 +122,15 @@ pub fn init() !void {
         &xkb.base_evt,
         null,
     ) == 0)
-        return error.XkbSetupFailed;
+        return InitError.XkbSetup;
 
     xkb.ctx = c.xkb_context_new(c.XKB_CONTEXT_NO_FLAGS) orelse
-        return error.ContextInitFailed;
+        return InitError.XkbContext;
     errdefer c.xkb_context_unref(xkb.ctx);
 
     xkb.core_dvid = c.xkb_x11_get_core_keyboard_device_id(xcb.conn);
     if (xkb.core_dvid == -1)
-        return error.KeyboardMissing;
+        return InitError.NoCoreKeyboard;
 
     const required_map_parts = c.XCB_XKB_MAP_PART_KEY_TYPES |
         c.XCB_XKB_MAP_PART_KEY_SYMS |
@@ -147,7 +166,15 @@ pub fn init() !void {
         &values,
     ));
 
-    const flag_cookie = c.xcb_xkb_per_client_flags(xcb.conn, @intCast(xkb.core_dvid), c.XCB_XKB_PER_CLIENT_FLAG_DETECTABLE_AUTO_REPEAT, 1, 0, 0, 0);
+    const flag_cookie = c.xcb_xkb_per_client_flags(
+        xcb.conn,
+        @intCast(xkb.core_dvid),
+        c.XCB_XKB_PER_CLIENT_FLAG_DETECTABLE_AUTO_REPEAT,
+        1,
+        0,
+        0,
+        0,
+    );
     var flag_err: [*c]c.xcb_generic_error_t = null;
     _ = c.xcb_xkb_per_client_flags_reply(xcb.conn, flag_cookie, &flag_err);
     if (flag_err) |err| try processErr(err);
@@ -157,13 +184,13 @@ pub fn init() !void {
         xcb.conn,
         xkb.core_dvid,
         c.XKB_KEYMAP_COMPILE_NO_FLAGS,
-    ) orelse return error.InvalidKeymap;
+    ) orelse return KeymapError.Keymap;
     errdefer c.xkb_keymap_unref(xkb.keymap);
     xkb.state = c.xkb_x11_state_new_from_device(
         xkb.keymap,
         xcb.conn,
         xkb.core_dvid,
-    ) orelse return error.InvalidKeyState;
+    ) orelse return KeymapError.KeyState;
     errdefer c.xkb_keymap_unref(xkb.state);
 }
 
@@ -174,7 +201,7 @@ pub fn deinit() void {
     c.xcb_disconnect(xcb.conn);
 }
 
-pub fn createWindow(allocator: std.mem.Allocator, w: u16, h: u16, opts: windy.Window.Options) !windy.Window {
+pub fn createWindow(allocator: std.mem.Allocator, w: u16, h: u16, opts: windy.Window.Options) ClipboardWindowError!windy.Window {
     const wid = c.xcb_generate_id(xcb.conn);
 
     const start_pos: windy.Position = opts.start_pos orelse .{
@@ -182,13 +209,7 @@ pub fn createWindow(allocator: std.mem.Allocator, w: u16, h: u16, opts: windy.Wi
         .y = @intCast((xcb.screen.height_in_pixels - h) / 2),
     };
 
-    if (start_pos.x >= xcb.screen.width_in_pixels or start_pos.y >= xcb.screen.height_in_pixels)
-        return error.StartPosOutOfBounds;
-
-    const values = [_]u32{switch (opts.back_pixel) {
-        .white => xcb.screen.white_pixel,
-        .black => xcb.screen.black_pixel,
-    }};
+    const values = [_]u32{xcb.screen.black_pixel};
     try check(c.xcb_create_window_checked(
         xcb.conn,
         xcb.screen.root_depth,
@@ -228,7 +249,7 @@ pub fn createWindow(allocator: std.mem.Allocator, w: u16, h: u16, opts: windy.Wi
     };
 }
 
-pub fn clipboardWindow() !windy.Window {
+pub fn clipboardWindow() ClipboardWindowError!windy.Window {
     const wid = c.xcb_generate_id(xcb.conn);
 
     const values = [_]u32{c.XCB_EVENT_MASK_PROPERTY_CHANGE};
@@ -289,7 +310,7 @@ pub fn createCursor(
     h: u16,
     x_hot: u16,
     y_hot: u16,
-) !windy.Cursor {
+) CreateCursorError!windy.Cursor {
     const pid = c.xcb_generate_id(xcb.conn);
     try check(c.xcb_create_pixmap_checked(xcb.conn, @bitSizeOf(i32), pid, xcb.screen.root, w, h));
 
@@ -335,17 +356,17 @@ pub fn destroyCursor(cursor: windy.Cursor) void {
         std.log.err("Received error `{}` during cursor destroy", .{e});
 }
 
-pub fn pollEvents() !void {
+pub fn pollEvents() EventError!void {
     try internalPoll(false);
 }
 
-pub fn waitEvent() !void {
+pub fn waitEvent() EventError!void {
     try handleEvent(c.xcb_wait_for_event(xcb.conn));
 }
 
 /// Returns when we run out of events, or we receive a selection notify event,
 /// if requested through `early_ret`.
-fn internalPoll(early_ret: bool) !void {
+fn internalPoll(early_ret: bool) EventError!void {
     var evt = c.xcb_poll_for_event(xcb.conn);
     while (evt) |e| : (evt = c.xcb_poll_for_event(xcb.conn)) {
         try handleEvent(e);
@@ -353,7 +374,7 @@ fn internalPoll(early_ret: bool) !void {
     }
 }
 
-fn handleEvent(e: [*c]c.xcb_generic_event_t) !void {
+fn handleEvent(e: [*c]c.xcb_generic_event_t) EventError!void {
     defer std.c.free(e);
 
     const resp = e.*.response_type;
@@ -369,9 +390,10 @@ fn handleEvent(e: [*c]c.xcb_generic_event_t) !void {
             const notify: *c.xcb_selection_notify_event_t = @ptrCast(e);
             if (notify.property != xcb.clipboard_atom) return;
 
+            var w: std.Io.Writer = .fixed(windy.clipboard_buffer);
+
             var format: u8 = @sizeOf(i32);
             var bytes: u32 = 1;
-            var offset: u32 = 0;
             while (bytes > 0) {
                 var prop_err: [*c]c.xcb_generic_error_t = null;
                 const reply = c.xcb_get_property_reply(
@@ -382,7 +404,7 @@ fn handleEvent(e: [*c]c.xcb_generic_event_t) !void {
                         @intCast(windy.clipboard_window.id),
                         notify.property,
                         c.XCB_ATOM_ANY,
-                        offset / format,
+                        @intCast(w.end / format),
                         std.math.maxInt(u16),
                     ),
                     &prop_err,
@@ -390,7 +412,7 @@ fn handleEvent(e: [*c]c.xcb_generic_event_t) !void {
                 defer std.c.free(reply);
                 if (prop_err) |err| try processErr(err);
 
-                if (offset == 0) format = reply.*.format / 8;
+                if (w.end == 0) format = reply.*.format / 8;
 
                 const len: u32 = @intCast(c.xcb_get_property_value_length(reply) * format);
                 if (len <= 0) {
@@ -398,16 +420,12 @@ fn handleEvent(e: [*c]c.xcb_generic_event_t) !void {
                     continue;
                 }
 
-                if (offset + len > windy.clipboard_buffer.len) return error.OutOfMemory;
-
-                const data: [*]u8 = @ptrCast(c.xcb_get_property_value(reply) orelse return error.InvalidSelection);
-                @memcpy(windy.clipboard_buffer[offset..][0..len], data[0..len]);
-                offset += len;
+                const data: [*]u8 = @ptrCast(c.xcb_get_property_value(reply) orelse return EventError.Selection);
+                w.writeAll(data[0..len]) catch return EventError.OutOfMemory;
                 bytes = reply.*.bytes_after;
             }
 
-            if (offset > windy.clipboard_buffer.len) return error.OutOfMemory;
-            owned_selection = windy.clipboard_buffer[0..offset];
+            owned_selection = w.buffered();
         },
         c.XCB_SELECTION_REQUEST => {
             const req: *c.xcb_selection_request_event_t = @ptrCast(e);
@@ -461,13 +479,13 @@ fn handleEvent(e: [*c]c.xcb_generic_event_t) !void {
         },
         c.XCB_CLIENT_MESSAGE => {
             const msg: *c.xcb_client_message_event_t = @ptrCast(e);
-            const wind = windy.window_map.getPtr(msg.window) orelse return error.WindowMissing;
+            const wind = windy.window_map.getPtr(msg.window) orelse return EventError.WindowMissing;
             if (msg.type == xcb.wm_prot_atom and msg.data.data32[0] == xcb.wind_del_atom)
                 wind.should_close = true;
         },
         c.XCB_CONFIGURE_NOTIFY => {
             const cfg: *c.xcb_configure_notify_event_t = @ptrCast(e);
-            const wind = windy.window_map.getPtr(cfg.window) orelse return error.WindowMissing;
+            const wind = windy.window_map.getPtr(cfg.window) orelse return EventError.WindowMissing;
 
             if (wind.size.w != cfg.width or wind.size.h != cfg.height) {
                 wind.size = .{ .w = cfg.width, .h = cfg.height };
@@ -482,12 +500,12 @@ fn handleEvent(e: [*c]c.xcb_generic_event_t) !void {
         },
         c.XCB_EXPOSE => {
             const exp: *c.xcb_expose_event_t = @ptrCast(e);
-            const wind = windy.window_map.getPtr(exp.window) orelse return error.WindowMissing;
+            const wind = windy.window_map.getPtr(exp.window) orelse return EventError.WindowMissing;
             if (wind.callbacks.refresh) |cb| cb(wind);
         },
         c.XCB_KEY_PRESS => {
             const press: *c.xcb_key_press_event_t = @ptrCast(e);
-            const wind = windy.window_map.getPtr(press.event) orelse return error.WindowMissing;
+            const wind = windy.window_map.getPtr(press.event) orelse return EventError.WindowMissing;
             const sym = c.xkb_state_key_get_one_sym(xkb.state, press.detail);
             const mods = toMods(press.state);
             if (wind.callbacks.key) |cb| cb(wind, .press, symToKey(sym), mods);
@@ -495,14 +513,14 @@ fn handleEvent(e: [*c]c.xcb_generic_event_t) !void {
         },
         c.XCB_KEY_RELEASE => {
             const release: *c.xcb_key_release_event_t = @ptrCast(e);
-            const wind = windy.window_map.getPtr(release.event) orelse return error.WindowMissing;
+            const wind = windy.window_map.getPtr(release.event) orelse return EventError.WindowMissing;
             const sym = c.xkb_state_key_get_one_sym(xkb.state, release.detail);
             const mods = toMods(release.state);
             if (wind.callbacks.key) |cb| cb(wind, .release, symToKey(sym), mods);
         },
         c.XCB_BUTTON_PRESS => {
             const press: *c.xcb_button_press_event_t = @ptrCast(e);
-            const wind = windy.window_map.getPtr(press.event) orelse return error.WindowMissing;
+            const wind = windy.window_map.getPtr(press.event) orelse return EventError.WindowMissing;
             const mods = toMods(press.state);
             const scrollCb = wind.callbacks.scroll;
             switch (press.detail) {
@@ -522,7 +540,7 @@ fn handleEvent(e: [*c]c.xcb_generic_event_t) !void {
         },
         c.XCB_BUTTON_RELEASE => {
             const release: *c.xcb_button_release_event_t = @ptrCast(e);
-            const wind = windy.window_map.getPtr(release.event) orelse return error.WindowMissing;
+            const wind = windy.window_map.getPtr(release.event) orelse return EventError.WindowMissing;
             const mods = toMods(release.state);
             const scrollCb = wind.callbacks.scroll;
             switch (release.detail) {
@@ -542,7 +560,7 @@ fn handleEvent(e: [*c]c.xcb_generic_event_t) !void {
         },
         c.XCB_MOTION_NOTIFY => {
             const move: *c.xcb_motion_notify_event_t = @ptrCast(e);
-            const wind = windy.window_map.getPtr(move.event) orelse return error.WindowMissing;
+            const wind = windy.window_map.getPtr(move.event) orelse return EventError.WindowMissing;
             if (wind.callbacks.mouseMove) |cb| cb(wind, move.event_x, move.event_y, toMods(move.state));
         },
         else => |ty| if (resp == xkb.base_evt) {
@@ -579,7 +597,7 @@ fn handleEvent(e: [*c]c.xcb_generic_event_t) !void {
     }
 }
 
-pub fn getClipboard() ![]const u8 {
+pub fn getClipboard() GetClipboardError![]const u8 {
     var err: [*c]c.xcb_generic_error_t = null;
     const reply = c.xcb_get_selection_owner_reply(
         xcb.conn,
@@ -609,11 +627,11 @@ pub fn getClipboard() ![]const u8 {
     return owned_selection;
 }
 
-pub fn setClipboard(new_buf: []const u8) !void {
-    if (new_buf.len > windy.clipboard_buffer.len) return error.OutOfMemory;
-    const buf = windy.clipboard_buffer[0..new_buf.len];
-    @memcpy(buf, new_buf);
-    owned_selection = buf;
+pub fn setClipboard(new_buf: []const u8) SetClipboardError!void {
+    var w: std.Io.Writer = .fixed(windy.clipboard_buffer);
+    w.writeAll(new_buf) catch return error.OutOfMemory;
+    owned_selection = w.buffered();
+
     try check(c.xcb_set_selection_owner_checked(
         xcb.conn,
         @intCast(windy.clipboard_window.id),
@@ -623,7 +641,7 @@ pub fn setClipboard(new_buf: []const u8) !void {
     try tryFlush();
 }
 
-pub fn setTitle(allocator: std.mem.Allocator, wid: windy.Window.Id, title: [:0]const u8) !void {
+pub fn setTitle(allocator: std.mem.Allocator, wid: windy.Window.Id, title: [:0]const u8) SetTitleError!void {
     inline for (.{ c.XCB_ATOM_WM_NAME, c.XCB_ATOM_WM_ICON_NAME }) |prop|
         try check(c.xcb_change_property_checked(
             xcb.conn,
@@ -648,9 +666,10 @@ pub fn setTitle(allocator: std.mem.Allocator, wid: windy.Window.Id, title: [:0]c
         @as(u32, @intCast(class_str.len)),
         class_str.ptr,
     ));
+    try tryFlush();
 }
 
-pub fn setCursor(wind: *windy.Window, cursor: windy.Cursor) !void {
+pub fn setCursor(wind: *windy.Window, cursor: windy.Cursor) SetCursorError!void {
     const vals = [_]u32{@intCast(cursor.id)};
     try check(c.xcb_change_window_attributes_checked(
         xcb.conn,
@@ -658,11 +677,10 @@ pub fn setCursor(wind: *windy.Window, cursor: windy.Cursor) !void {
         c.XCB_CW_CURSOR,
         &vals,
     ));
-
     try tryFlush();
 }
 
-pub fn setMinWindowSize(wind: *windy.Window, min_size: windy.Size) !void {
+pub fn setMinWindowSize(wind: *windy.Window, min_size: windy.Size) NormalHintError!void {
     var size_hints = &wind.platform.size_hints;
     if (size_hints.flags.prog_min_size and
         size_hints.min_width == min_size.w and
@@ -686,7 +704,7 @@ pub fn setMinWindowSize(wind: *windy.Window, min_size: windy.Size) !void {
     try tryFlush();
 }
 
-pub fn setMaxWindowSize(wind: *windy.Window, max_size: windy.Size) !void {
+pub fn setMaxWindowSize(wind: *windy.Window, max_size: windy.Size) NormalHintError!void {
     var size_hints = &wind.platform.size_hints;
     if (size_hints.flags.prog_max_size and
         size_hints.max_width == max_size.w and
@@ -710,7 +728,7 @@ pub fn setMaxWindowSize(wind: *windy.Window, max_size: windy.Size) !void {
     try tryFlush();
 }
 
-pub fn setWindowResizeIncr(wind: *windy.Window, incr_size: windy.Size) !void {
+pub fn setWindowResizeIncr(wind: *windy.Window, incr_size: windy.Size) NormalHintError!void {
     var size_hints = &wind.platform.size_hints;
     if (size_hints.flags.prog_resize_inc and
         size_hints.width_inc == incr_size.w and
@@ -734,7 +752,7 @@ pub fn setWindowResizeIncr(wind: *windy.Window, incr_size: windy.Size) !void {
     try tryFlush();
 }
 
-pub fn setWindowAspect(wind: *windy.Window, numerator: u16, denominator: u16) !void {
+pub fn setWindowAspect(wind: *windy.Window, numerator: u16, denominator: u16) NormalHintError!void {
     var size_hints = &wind.platform.size_hints;
     if (size_hints.flags.prog_aspect and
         // only need to check `min_aspect` here since it's set in tandem with `max_aspect`
@@ -761,7 +779,7 @@ pub fn setWindowAspect(wind: *windy.Window, numerator: u16, denominator: u16) !v
     try tryFlush();
 }
 
-pub fn resizeWindow(wind: windy.Window, size: windy.Size) !void {
+pub fn resizeWindow(wind: windy.Window, size: windy.Size) ResizeError!void {
     const vals = [_]u32{ size.w, size.h };
     try check(c.xcb_configure_window_checked(
         xcb.conn,
@@ -772,8 +790,7 @@ pub fn resizeWindow(wind: windy.Window, size: windy.Size) !void {
     try tryFlush();
 }
 
-pub fn moveWindow(wind: windy.Window, pos: windy.Position) !void {
-    if (pos.x < 0 or pos.y < 0) return error.InvalidPosition;
+pub fn moveWindow(wind: windy.Window, pos: windy.Position) MoveError!void {
     const vals = [_]u32{ @intCast(pos.x), @intCast(pos.y) };
     try check(c.xcb_configure_window_checked(
         xcb.conn,
@@ -784,38 +801,38 @@ pub fn moveWindow(wind: windy.Window, pos: windy.Position) !void {
     try tryFlush();
 }
 
-pub fn registerRefreshCb(wind: *windy.Window, add: bool) !void {
+pub fn registerRefreshCb(wind: *windy.Window, add: bool) EventRegisterError!void {
     try registerEventMask(wind, c.XCB_EVENT_MASK_EXPOSURE, add);
 }
 
-pub fn registerConfigure(wind: *windy.Window, add: bool) !void {
+pub fn registerConfigure(wind: *windy.Window, add: bool) EventRegisterError!void {
     try registerEventMask(wind, c.XCB_EVENT_MASK_STRUCTURE_NOTIFY, add);
 }
 
-pub fn registerKeyCb(wind: *windy.Window, add: bool) !void {
+pub fn registerKeyCb(wind: *windy.Window, add: bool) EventRegisterError!void {
     try registerEventMask(wind, c.XCB_EVENT_MASK_KEY_PRESS | c.XCB_EVENT_MASK_KEY_RELEASE, add);
 }
 
-pub fn registerMouseCb(wind: *windy.Window, add: bool) !void {
+pub fn registerMouseCb(wind: *windy.Window, add: bool) EventRegisterError!void {
     try registerEventMask(wind, c.XCB_EVENT_MASK_BUTTON_PRESS | c.XCB_EVENT_MASK_BUTTON_RELEASE, add);
 }
 
-pub fn registerMouseMoveCb(wind: *windy.Window, add: bool) !void {
+pub fn registerMouseMoveCb(wind: *windy.Window, add: bool) EventRegisterError!void {
     try registerEventMask(wind, c.XCB_EVENT_MASK_POINTER_MOTION | c.XCB_EVENT_MASK_BUTTON_MOTION, add);
 }
 
-pub fn registerScrollCb(wind: *windy.Window, add: bool) !void {
+pub fn registerScrollCb(wind: *windy.Window, add: bool) EventRegisterError!void {
     try registerEventMask(wind, c.XCB_EVENT_MASK_BUTTON_PRESS | c.XCB_EVENT_MASK_BUTTON_RELEASE, add);
 }
 
-fn atom(name: [:0]const u8) !c.xcb_atom_t {
+fn atom(name: [:0]const u8) error{OutOfMemory}!c.xcb_atom_t {
     const cookie = c.xcb_intern_atom(xcb.conn, 0, @intCast(name.len), name.ptr);
     const reply = c.xcb_intern_atom_reply(xcb.conn, cookie, null) orelse return error.OutOfMemory;
     defer std.c.free(reply);
     return reply.*.atom;
 }
 
-fn registerEventMask(wind: *windy.Window, mask: i32, add: bool) !void {
+fn registerEventMask(wind: *windy.Window, mask: i32, add: bool) EventRegisterError!void {
     if (wind.platform.event_mask_list & mask != 0 or !add)
         return;
 
@@ -834,7 +851,7 @@ fn registerEventMask(wind: *windy.Window, mask: i32, add: bool) !void {
     try tryFlush();
 }
 
-fn updateKeymaps() !void {
+fn updateKeymaps() KeymapError!void {
     c.xkb_keymap_unref(xkb.keymap);
     c.xkb_state_unref(xkb.state);
     xkb.keymap = c.xkb_x11_keymap_new_from_device(
@@ -842,13 +859,13 @@ fn updateKeymaps() !void {
         xcb.conn,
         xkb.core_dvid,
         c.XKB_KEYMAP_COMPILE_NO_FLAGS,
-    ) orelse return error.InvalidKeymap;
+    ) orelse return KeymapError.Keymap;
     errdefer c.xkb_keymap_unref(xkb.keymap);
     xkb.state = c.xkb_x11_state_new_from_device(
         xkb.keymap,
         xcb.conn,
         xkb.core_dvid,
-    ) orelse return error.InvalidKeyState;
+    ) orelse return KeymapError.KeyState;
 }
 
 // Key and mouse masks overlap
@@ -996,122 +1013,122 @@ fn buttonToMouse(button: u8) windy.MouseButton {
     };
 }
 
-inline fn tryFlush() !void {
+fn tryFlush() FlushError!void {
     const flush = c.xcb_flush(xcb.conn);
     if (flush >= 0) return;
-    std.log.err("Received error code `{}` during cursor set flush", .{flush});
+    std.log.err("Received error code `{}` during flush", .{flush});
     return error.Flush;
 }
 
-inline fn processConnErr(errcode: i32) !void {
+fn processConnErr(errcode: i32) ConnError!void {
     return switch (errcode) {
         0 => {},
-        c.XCB_CONN_ERROR => return error.Connection,
-        c.XCB_CONN_CLOSED_EXT_NOTSUPPORTED => return error.ExtUnsupported,
-        c.XCB_CONN_CLOSED_MEM_INSUFFICIENT => return error.OutOfMemory,
-        c.XCB_CONN_CLOSED_REQ_LEN_EXCEED => return error.ReqLenExceed,
-        c.XCB_CONN_CLOSED_PARSE_ERR => return error.Parse,
-        c.XCB_CONN_CLOSED_INVALID_SCREEN => return error.InvalidScreen,
-        c.XCB_CONN_CLOSED_FDPASSING_FAILED => return error.FdPass,
-        else => return error.Unknown,
+        c.XCB_CONN_ERROR => return ConnError.Connection,
+        c.XCB_CONN_CLOSED_EXT_NOTSUPPORTED => return ConnError.ExtUnsupported,
+        c.XCB_CONN_CLOSED_MEM_INSUFFICIENT => return ConnError.OutOfMemory,
+        c.XCB_CONN_CLOSED_REQ_LEN_EXCEED => return ConnError.ReqLenExceed,
+        c.XCB_CONN_CLOSED_PARSE_ERR => return ConnError.Parse,
+        c.XCB_CONN_CLOSED_INVALID_SCREEN => return ConnError.InvalidScreen,
+        c.XCB_CONN_CLOSED_FDPASSING_FAILED => return ConnError.FdPass,
+        else => return ConnError.Unknown,
     };
 }
 
-inline fn processErr(err: [*c]c.xcb_generic_error_t) !void {
+fn processErr(err: [*c]c.xcb_generic_error_t) GenericError!void {
     return switch (err.*.error_code) {
         c.XCB_REQUEST => {
             const e: *c.xcb_request_error_t = @ptrCast(err);
             std.log.err("Request error: {}", .{e});
-            return error.Request;
+            return GenericError.Request;
         },
         c.XCB_VALUE => {
             const e: *c.xcb_value_error_t = @ptrCast(err);
             std.log.err("Value error: {}", .{e});
-            return error.Value;
+            return GenericError.Value;
         },
         c.XCB_WINDOW => {
             const e: *c.xcb_window_error_t = @ptrCast(err);
             std.log.err("Window error: {}", .{e});
-            return error.Window;
+            return GenericError.Window;
         },
         c.XCB_PIXMAP => {
             const e: *c.xcb_pixmap_error_t = @ptrCast(err);
             std.log.err("Pixmap error: {}", .{e});
-            return error.Pixmap;
+            return GenericError.Pixmap;
         },
         c.XCB_ATOM => {
             const e: *c.xcb_atom_error_t = @ptrCast(err);
             std.log.err("Atom error: {}", .{e});
-            return error.Atom;
+            return GenericError.Atom;
         },
         c.XCB_CURSOR => {
             const e: *c.xcb_cursor_error_t = @ptrCast(err);
             std.log.err("Cursor error: {}", .{e});
-            return error.Cursor;
+            return GenericError.Cursor;
         },
         c.XCB_FONT => {
             const e: *c.xcb_font_error_t = @ptrCast(err);
             std.log.err("Font error: {}", .{e});
-            return error.Font;
+            return GenericError.Font;
         },
         c.XCB_MATCH => {
             const e: *c.xcb_match_error_t = @ptrCast(err);
             std.log.err("Match error: {}", .{e});
-            return error.Match;
+            return GenericError.Match;
         },
         c.XCB_DRAWABLE => {
             const e: *c.xcb_drawable_error_t = @ptrCast(err);
             std.log.err("Drawable error: {}", .{e});
-            return error.Drawable;
+            return GenericError.Drawable;
         },
         c.XCB_ACCESS => {
             const e: *c.xcb_access_error_t = @ptrCast(err);
             std.log.err("Access error: {}", .{e});
-            return error.Access;
+            return GenericError.Access;
         },
         c.XCB_ALLOC => {
             const e: *c.xcb_alloc_error_t = @ptrCast(err);
             std.log.err("Alloc error: {}", .{e});
-            return error.OutOfMemory; // diverges so it can unify with other OOM
+            return GenericError.OutOfMemory;
         },
         c.XCB_COLORMAP => {
             const e: *c.xcb_colormap_error_t = @ptrCast(err);
             std.log.err("Colormap error: {}", .{e});
-            return error.Colormap;
+            return GenericError.Colormap;
         },
         c.XCB_G_CONTEXT => {
             const e: *c.xcb_g_context_error_t = @ptrCast(err);
             std.log.err("Graphics context error: {}", .{e});
-            return error.GraphicsContext;
+            return GenericError.GraphicsContext;
         },
         c.XCB_ID_CHOICE => {
             const e: *c.xcb_id_choice_error_t = @ptrCast(err);
             std.log.err("Id choice error: {}", .{e});
-            return error.IdChoice;
+            return GenericError.IdChoice;
         },
         c.XCB_NAME => {
             const e: *c.xcb_name_error_t = @ptrCast(err);
             std.log.err("Name error: {}", .{e});
-            return error.Name;
+            return GenericError.Name;
         },
         c.XCB_LENGTH => {
             const e: *c.xcb_length_error_t = @ptrCast(err);
             std.log.err("Length error: {}", .{e});
-            return error.Length;
+            return GenericError.Length;
         },
         c.XCB_IMPLEMENTATION => {
             const e: *c.xcb_implementation_error_t = @ptrCast(err);
             std.log.err("Implementation error: {}", .{e});
-            return error.Implementation;
+            return GenericError.Implementation;
         },
         else => {
             std.log.err("Unknown error: {}", .{err.*});
-            return error.Unknown;
+            return GenericError.Unknown;
         },
     };
 }
 
-inline fn check(cookie: c.xcb_void_cookie_t) !void {
+fn check(cookie: c.xcb_void_cookie_t) GenericError!void {
     if (c.xcb_request_check(xcb.conn, cookie)) |err|
         try processErr(err);
 }

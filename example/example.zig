@@ -28,46 +28,48 @@ fn scrollCb(_: *windy.Window, delta_x: f32, delta_y: f32, mods: windy.Mods) void
     std.log.info("Mouse scroll with x={} y={}, mods: {}", .{ delta_x, delta_y, mods });
 }
 
-fn dialogExamples() !void {
+fn dialogExamples() windy.dlg_err.Error!void {
     const save_path = try windy.saveDialog(&.{
         .{ .name = "Zig", .exts = &.{ "zig", "zon" } },
         .{ .name = "Text", .exts = &.{ "txt", "pdf" } },
     }, "Hello World", null);
     defer windy.freeResult(save_path);
-    std.log.err("Save dialog path: {s}", .{save_path});
+    std.log.info("Save dialog path: {s}", .{save_path});
 
     const open_path = try windy.openDialog(false, .file, &.{
         .{ .name = "Zig", .exts = &.{ "zig", "zon" } },
         .{ .name = "Text", .exts = &.{ "txt", "pdf" } },
     }, "Hello World", null);
     defer windy.freeResult(open_path);
-    std.log.err("Open dialog path: {s}", .{open_path});
+    std.log.info("Open dialog path: {s}", .{open_path});
 
     const multi_path = try windy.openDialog(true, .file, &.{
         .{ .name = "Zig", .exts = &.{ "zig", "zon" } },
         .{ .name = "Text", .exts = &.{ "txt", "pdf" } },
     }, "Hello World", null);
     defer windy.freeResult(multi_path);
-    std.log.err("Multi open dialog paths: [", .{});
-    for (multi_path) |path| std.log.err("  {s}", .{path});
-    std.log.err("];", .{});
+    std.log.info("Multi open dialog paths: [", .{});
+    for (multi_path) |path| std.log.info("  {s}", .{path});
+    std.log.info("];", .{});
 
-    std.log.err("Info dialog result: {}", .{
+    std.log.info("Info dialog result: {}", .{
         try windy.message(.info, .yes_no, "Info dialog", "Info Title"),
     });
-    std.log.err("Warning dialog result: {}", .{
+    std.log.info("Warning dialog result: {}", .{
         try windy.message(.warn, .ok_cancel, "Warning dialog", "Warning Title"),
     });
-    std.log.err("Error dialog result: {}", .{
+    std.log.info("Error dialog result: {}", .{
         try windy.message(.err, .ok, "Error dialog", "Error Title"),
     });
 
-    const color_res = try windy.colorChooser(
+    if (try windy.colorChooser(
         .{ .r = 255, .g = 0, .b = 255, .a = 255 },
         true,
         "Color Chooser Test",
-    );
-    std.log.err("Color chooser result: #{X:0>6}", .{color_res.toColor()});
+    )) |c|
+        std.log.info("Color chooser result: #{X:0>6}", .{c.toColor()})
+    else
+        std.log.info("Color chooser returned null", .{});
 }
 
 pub fn main() !void {
@@ -91,7 +93,6 @@ pub fn main() !void {
     if (options.run_dialog_examples) try dialogExamples();
 
     const wind: *windy.Window = try .create(1280, 720, .{
-        .back_pixel = .black,
         .title = "Example Window",
     });
     defer wind.destroy();

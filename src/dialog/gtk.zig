@@ -5,6 +5,7 @@ const glib = @import("glib");
 const gtk = @import("gtk");
 
 const windy = @import("../windy.zig");
+const Error = @import("errors.zig").GtkError;
 
 fn rgbaToGdk(color: windy.Rgba) gdk.RGBA {
     return .{
@@ -47,9 +48,9 @@ pub fn openDialog(
     filters: []const windy.SentinelFilter,
     title: [:0]const u8,
     default_path: ?[:0]const u8,
-) !if (multiple_selection) []const []const u8 else []const u8 {
+) Error!if (multiple_selection) []const []const u8 else []const u8 {
     var dummy: i32 = 0;
-    if (gtk.initCheck(&dummy, null) == 0) return error.Initialization;
+    if (gtk.initCheck(&dummy, null) == 0) return Error.Initialize;
 
     const dialog = gtk.FileChooserDialog.new(
         title,
@@ -103,9 +104,9 @@ pub fn saveDialog(
     filters: []const windy.SentinelFilter,
     title: [:0]const u8,
     default_path: ?[:0]const u8,
-) ![]const u8 {
+) Error![]const u8 {
     var dummy: i32 = 0;
-    if (gtk.initCheck(&dummy, null) == 0) return error.Initialization;
+    if (gtk.initCheck(&dummy, null) == 0) return Error.Initialize;
 
     const dialog = gtk.FileChooserDialog.new(
         title,
@@ -131,7 +132,7 @@ pub fn saveDialog(
 
     const path = gtk.FileChooser.getFilename(dialog.as(gtk.FileChooser)) orelse return &.{};
     defer glib.free(path);
-    return child_allocator.dupe(u8, std.mem.span(path));
+    return try child_allocator.dupe(u8, std.mem.span(path));
 }
 
 pub fn message(
@@ -140,9 +141,9 @@ pub fn message(
     buttons: windy.MessageButtons,
     text: [:0]const u8,
     title: [:0]const u8,
-) !bool {
+) Error!bool {
     var dummy: i32 = 0;
-    if (gtk.initCheck(&dummy, null) == 0) return error.Initialization;
+    if (gtk.initCheck(&dummy, null) == 0) return Error.Initialize;
 
     const dialog = gtk.MessageDialog.new(
         null,
@@ -176,9 +177,9 @@ pub fn colorChooser(
     color: windy.Rgba,
     use_alpha: bool,
     title: [:0]const u8,
-) !windy.Rgba {
+) Error!?windy.Rgba {
     var dummy: i32 = 0;
-    if (gtk.initCheck(&dummy, null) == 0) return error.Initialization;
+    if (gtk.initCheck(&dummy, null) == 0) return Error.Initialize;
 
     const dialog = gtk.ColorChooserDialog.new(title, null);
     defer {
@@ -190,7 +191,7 @@ pub fn colorChooser(
     gtk.ColorChooser.setRgba(dialog.as(gtk.ColorChooser), &rgbaToGdk(color));
 
     if (gtk.Dialog.run(dialog.as(gtk.Dialog)) != @intFromEnum(gtk.ResponseType.ok))
-        return error.Canceled;
+        return null;
 
     var gdk_color: gdk.RGBA = undefined;
     gtk.ColorChooser.getRgba(dialog.as(gtk.ColorChooser), &gdk_color);

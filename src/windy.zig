@@ -3,14 +3,19 @@ const builtin = @import("builtin");
 
 const options = @import("options");
 
+pub const dlg_err = @import("dialog/errors.zig");
+const DialogError = dlg_err.Error;
+pub const wind_err = @import("window/errors.zig");
+
 const dlg_ns: type = b: {
     if (isLinuxOrBsd())
         break :b if (options.use_gtk)
-            @import("dialog/gtk_impl.zig")
+            @import("dialog/gtk.zig")
         else
-            @import("dialog/zenity_impl.zig");
+            @import("dialog/zenity.zig");
     break :b switch (builtin.os.tag) {
-        .windows => @import("dialog/win_impl.zig"),
+        .windows => @import("dialog/win.zig"),
+        .macos => @import("dialog/cocoa.zig"),
         else => @compileError("Unsupported OS"),
     };
 };
@@ -18,11 +23,12 @@ const dlg_ns: type = b: {
 const wind_ns: type = b: {
     if (isLinuxOrBsd())
         break :b if (options.use_wayland)
-            @import("window/wl_impl.zig")
+            @import("window/wl.zig")
         else
-            @import("window/x11_impl.zig");
+            @import("window/x11.zig");
     break :b switch (builtin.os.tag) {
-        .windows => @import("window/win_impl.zig"),
+        .windows => @import("window/win.zig"),
+        .macos => @import("dialog/cocoa.zig"),
         else => @compileError("Unsupported OS"),
     };
 };
@@ -34,9 +40,11 @@ pub var clipboard_buffer: []u8 = &.{};
 var windy_allocator: ?std.mem.Allocator = null;
 var vulkan_dyn_lib: if (options.vulkan_support) std.DynLib else void = undefined;
 
+pub const InitError = wind_err.InitError || if (options.vulkan_support) std.DynLib.Error else error{};
+
 /// Specify `clip_buf` with an appropriately sized buffer if you wish to use
 /// `getClipboard()` or `setClipboard()`, as the result/input is copied and stored there
-pub fn init(allocator: std.mem.Allocator, clip_buf: []u8) !void {
+pub fn init(allocator: std.mem.Allocator, clip_buf: []u8) InitError!void {
     windy_allocator = allocator;
     try wind_ns.init();
     const wind = try wind_ns.clipboardWindow();
@@ -64,16 +72,20 @@ pub fn deinit() void {
     if (options.vulkan_support) vulkan_dyn_lib.close();
 }
 
+pub fn initialized() bool {
+    return windy_allocator != null;
+}
+
 /// Poll for incoming events, after which the registered (`register[...]Cb()`) events
 /// get their callbacks dispatched, if there were any.
-pub fn pollEvents() !void {
+pub fn pollEvents() wind_err.EventError!void {
     try wind_ns.pollEvents();
 }
 
 /// Processes a single event, or blocks until it receives one,
 /// after which the registered (`register[...]Cb()`) events
 /// get their callbacks dispatched, if there were any.
-pub fn waitEvent() !void {
+pub fn waitEvent() wind_err.EventError!void {
     try wind_ns.waitEvent();
 }
 
@@ -83,7 +95,7 @@ pub fn waitEvent() !void {
 /// as the clipboard could be in use by other programs.
 ///
 /// If these are a problem, wrap it in `io.async()` or similar once they're available.
-pub fn getClipboard() ![]const u8 {
+pub fn getClipboard() wind_err.GetClipboardError![]const u8 {
     return try wind_ns.getClipboard();
 }
 
@@ -91,13 +103,13 @@ pub fn getClipboard() ![]const u8 {
 /// as the clipboard could be in use by other programs.
 ///
 /// If this is a problem, wrap it in `io.async()` or similar once they're available.
-pub fn setClipboard(new_buf: []const u8) !void {
+pub fn setClipboard(new_buf: []const u8) wind_err.SetClipboardError!void {
     try wind_ns.setClipboard(new_buf);
 }
 
-pub fn vulkanProcAddr(comptime vk: type, name: [*:0]const u8) vk.PfnVoidFunction {
+pub fn vulkanProcAddr(comptime T: type, name: [*:0]const u8) T {
     if (!options.vulkan_support) @compileError("Please enable Vulkan support with `-Dvulkan_support=true`");
-    return vulkan_dyn_lib.lookup(vk.PfnVoidFunction, std.mem.span(name)) orelse null;
+    return vulkan_dyn_lib.lookup(T, std.mem.span(name)) orelse null;
 }
 
 /// This can be called without `-Dvulkan_support=true` if you wish to do so.
@@ -129,7 +141,7 @@ pub fn openDialog(
     /// (depending on `dialog_type` and `multiple_selection`) if set to null
     title: ?[]const u8,
     default_path: ?[]const u8,
-) !if (multiple_selection) []const []const u8 else []const u8 {
+) DialogError!if (multiple_selection) []const []const u8 else []const u8 {
     const allocator = windy_allocator orelse noinit();
 
     var arena: std.heap.ArenaAllocator = .init(allocator);
@@ -155,7 +167,7 @@ pub fn saveDialog(
     /// The title will be set to `Save File` if set to null
     title: ?[]const u8,
     default_path: ?[]const u8,
-) ![]const u8 {
+) DialogError![]const u8 {
     const allocator = windy_allocator orelse noinit();
 
     var arena: std.heap.ArenaAllocator = .init(allocator);
@@ -180,7 +192,7 @@ pub fn message(
     /// The title will be set to `Info`, `Warning` or `Error` if set to null,
     /// depending on `level`.
     title: ?[]const u8,
-) !bool {
+) DialogError!bool {
     const allocator = windy_allocator orelse noinit();
 
     var arena: std.heap.ArenaAllocator = .init(allocator);
@@ -208,14 +220,14 @@ pub fn message(
 }
 
 /// Opens a color chooser dialog, setting the initial value to `color`.
-/// Returns the selected color in RGBA, or `error.Canceled` if the dialog is canceled.
+/// Returns the selected color in RGBA, or null if the dialog is canceled.
 /// Note: Windows assumes input strings to be WTF8 and ignores `use_alpha` and `title`, as they're unsupported.
 pub fn colorChooser(
     color: Rgba,
     use_alpha: bool,
     /// The title will be set to `Choose a Color` if set to null.
     title: ?[]const u8,
-) !Rgba {
+) DialogError!?Rgba {
     const allocator = windy_allocator orelse noinit();
 
     var arena: std.heap.ArenaAllocator = .init(allocator);
@@ -237,7 +249,6 @@ pub fn colorChooser(
 pub const Window = struct {
     pub const Id = u64;
     pub const Options = struct {
-        back_pixel: BackPixel = .white,
         title: ?[:0]const u8 = null,
         start_pos: ?Position = null,
     };
@@ -281,15 +292,15 @@ pub const Window = struct {
     callbacks: Callbacks = .{},
     platform: PlatformWindowInfo() = .{},
 
-    pub fn create(w: u16, h: u16, opts: Options) !*Window {
+    pub fn create(w: u16, h: u16, opts: Options) wind_err.CreateWindowError!*Window {
         const allocator = windy_allocator orelse noinit();
         const window = try wind_ns.createWindow(allocator, w, h, opts);
         try window_map.put(allocator, window.id, window);
-        return window_map.getPtr(window.id) orelse unreachable;
+        return window_map.getPtr(window.id).?;
     }
 
     pub fn destroy(self: Window) void {
-        if (windy_allocator == null) noinit();
+        if (!initialized()) noinit();
         wind_ns.destroyWindow(self);
         if (!window_map.remove(self.id))
             std.log.err("Removing window from the internal map failed", .{})
@@ -306,99 +317,99 @@ pub const Window = struct {
         return try wind_ns.createSurface(vk, self, inst);
     }
 
-    pub fn setTitle(self: Window, title: [:0]const u8) !void {
+    pub fn setTitle(self: Window, title: [:0]const u8) wind_err.SetTitleError!void {
         const allocator = windy_allocator orelse noinit();
         try wind_ns.setTitle(allocator, self.id, title);
     }
 
-    pub fn setCursor(self: *Window, cursor: Cursor) !void {
-        if (windy_allocator == null) noinit();
+    pub fn setCursor(self: *Window, cursor: Cursor) wind_err.SetCursorError!void {
+        if (!initialized()) noinit();
         try wind_ns.setCursor(self, cursor);
     }
 
-    pub fn setMinSize(self: *Window, min_size: Size) !void {
-        if (windy_allocator == null) noinit();
+    pub fn setMinSize(self: *Window, min_size: Size) wind_err.NormalHintError!void {
+        if (!initialized()) noinit();
         try wind_ns.setMinWindowSize(self, min_size);
     }
 
-    pub fn setMaxSize(self: *Window, max_size: Size) !void {
-        if (windy_allocator == null) noinit();
+    pub fn setMaxSize(self: *Window, max_size: Size) wind_err.NormalHintError!void {
+        if (!initialized()) noinit();
         try wind_ns.setMaxWindowSize(self, max_size);
     }
 
-    pub fn setResizeIncr(self: *Window, incr_size: Size) !void {
-        if (windy_allocator == null) noinit();
+    pub fn setResizeIncr(self: *Window, incr_size: Size) wind_err.NormalHintError!void {
+        if (!initialized()) noinit();
         try wind_ns.setWindowResizeIncr(self, incr_size);
     }
 
-    pub fn setAspect(self: *Window, numerator: u16, denominator: u16) !void {
-        if (windy_allocator == null) noinit();
+    pub fn setAspect(self: *Window, numerator: u16, denominator: u16) wind_err.NormalHintError!void {
+        if (!initialized()) noinit();
         try wind_ns.setWindowAspect(self, numerator, denominator);
     }
 
-    pub fn resize(self: Window, size: Size) !void {
-        if (windy_allocator == null) noinit();
+    pub fn resize(self: Window, size: Size) wind_err.ResizeError!void {
+        if (!initialized()) noinit();
         try wind_ns.resizeWindow(self, size);
     }
 
-    pub fn move(self: Window, pos: Position) !void {
-        if (windy_allocator == null) noinit();
+    pub fn move(self: Window, pos: Position) wind_err.MoveError!void {
+        if (!initialized()) noinit();
         try wind_ns.moveWindow(self, pos);
     }
 
-    pub fn registerRefreshCb(self: *Window, cb: ?refreshCallback) !void {
-        if (windy_allocator == null) noinit();
+    pub fn registerRefreshCb(self: *Window, cb: ?refreshCallback) wind_err.EventRegisterError!void {
+        if (!initialized()) noinit();
         self.callbacks.refresh = cb;
         // Registrations are only required with XCB for now
         if (std.meta.hasFn(wind_ns, "registerRefreshCb"))
             try wind_ns.registerRefreshCb(self, cb != null);
     }
 
-    pub fn registerResizeCb(self: *Window, cb: ?resizeCallback) !void {
-        if (windy_allocator == null) noinit();
+    pub fn registerResizeCb(self: *Window, cb: ?resizeCallback) wind_err.EventRegisterError!void {
+        if (!initialized()) noinit();
         self.callbacks.resize = cb;
         if (std.meta.hasFn(wind_ns, "registerConfigure"))
             try wind_ns.registerConfigure(self, cb != null);
     }
 
-    pub fn registerMoveCb(self: *Window, cb: ?moveCallback) !void {
-        if (windy_allocator == null) noinit();
+    pub fn registerMoveCb(self: *Window, cb: ?moveCallback) wind_err.EventRegisterError!void {
+        if (!initialized()) noinit();
         self.callbacks.move = cb;
         if (std.meta.hasFn(wind_ns, "registerConfigure"))
             try wind_ns.registerConfigure(self, cb != null);
     }
 
-    pub fn registerKeyCb(self: *Window, cb: ?keyCallback) !void {
-        if (windy_allocator == null) noinit();
+    pub fn registerKeyCb(self: *Window, cb: ?keyCallback) wind_err.EventRegisterError!void {
+        if (!initialized()) noinit();
         self.callbacks.key = cb;
         if (std.meta.hasFn(wind_ns, "registerKeyCb"))
             try wind_ns.registerKeyCb(self, cb != null);
     }
 
-    pub fn registerCharCb(self: *Window, cb: ?charCallback) !void {
-        if (windy_allocator == null) noinit();
+    pub fn registerCharCb(self: *Window, cb: ?charCallback) wind_err.EventRegisterError!void {
+        if (!initialized()) noinit();
         self.callbacks.char = cb;
         if (std.meta.hasFn(wind_ns, "registerKeyCb"))
             // This uses key events, the only difference is the way the callbacks return data
             try wind_ns.registerKeyCb(self, cb != null);
     }
 
-    pub fn registerMouseCb(self: *Window, cb: ?mouseCallback) !void {
-        if (windy_allocator == null) noinit();
+    pub fn registerMouseCb(self: *Window, cb: ?mouseCallback) wind_err.EventRegisterError!void {
+        if (!initialized()) noinit();
         self.callbacks.mouse = cb;
         if (std.meta.hasFn(wind_ns, "registerMouseCb"))
             try wind_ns.registerMouseCb(self, cb != null);
     }
 
-    pub fn registerMouseMoveCb(self: *Window, cb: ?mouseMoveCallback) !void {
-        if (windy_allocator == null) noinit();
+    pub fn registerMouseMoveCb(self: *Window, cb: ?mouseMoveCallback) wind_err.EventRegisterError!void {
+        if (!initialized()) noinit();
         self.callbacks.mouseMove = cb;
         if (std.meta.hasFn(wind_ns, "registerMouseMoveCb"))
             try wind_ns.registerMouseMoveCb(self, cb != null);
     }
 
-    pub fn registerScrollCb(self: *Window, cb: ?scrollCallback) !void {
-        if (windy_allocator == null) noinit();
+    pub fn registerScrollCb(self: *Window, cb: ?scrollCallback) wind_err.EventRegisterError!void {
+        if (!initialized()) noinit();
         self.callbacks.scroll = cb;
         if (std.meta.hasFn(wind_ns, "registerScrollCb"))
             try wind_ns.registerScrollCb(self, cb != null);
@@ -414,13 +425,13 @@ pub const Cursor = struct {
     id: Id,
 
     /// The supplied image must be 32-bit ARGB.
-    pub fn create(argb_raw_img: []const u8, w: u16, h: u16, x_hot: u16, y_hot: u16) !Cursor {
-        if (windy_allocator == null) noinit();
+    pub fn create(argb_raw_img: []const u8, w: u16, h: u16, x_hot: u16, y_hot: u16) wind_err.CreateCursorError!Cursor {
+        if (!initialized()) noinit();
         return try wind_ns.createCursor(argb_raw_img, w, h, x_hot, y_hot);
     }
 
     pub fn destroy(self: Cursor) void {
-        if (windy_allocator == null) noinit();
+        if (!initialized()) noinit();
         wind_ns.destroyCursor(self);
     }
 };
@@ -701,7 +712,7 @@ const ModParamsSentinel = struct {
     filters: []const SentinelFilter,
 };
 
-fn transformFilters(allocator: std.mem.Allocator, filters: []const Filter) ![]const SentinelFilter {
+fn transformFilters(allocator: std.mem.Allocator, filters: []const Filter) DialogError![]const SentinelFilter {
     var new_filters: std.ArrayList(SentinelFilter) = .empty;
     for (filters) |f| {
         var new_exts: std.ArrayList([:0]const u8) = .empty;
@@ -721,7 +732,7 @@ fn modParams(
     title: []const u8,
     default_path: ?[]const u8,
     filters: []const Filter,
-) !if (requires_sentinel) ModParamsSentinel else ModParams {
+) DialogError!if (requires_sentinel) ModParamsSentinel else ModParams {
     if (!requires_sentinel) return .{
         .title = title,
         .default_path = default_path,
